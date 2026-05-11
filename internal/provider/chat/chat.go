@@ -47,7 +47,7 @@ func (a *Adapter) Stream(ctx context.Context, req *anthropic.Request, upstreamMo
 			return ctx.Err()
 		}
 	}
-	body, err := buildRequest(req, upstreamModel, a.pc.ExperimentalPassthroughServerTools)
+	body, aliases, err := buildRequestWithAliases(req, upstreamModel, a.pc.ExperimentalPassthroughServerTools)
 	if err != nil {
 		return err
 	}
@@ -93,6 +93,20 @@ func (a *Adapter) Stream(ctx context.Context, req *anthropic.Request, upstreamMo
 		name string
 	}
 	tools := map[int]*toolTrack{}
+	aliasBuffers := map[int]string{}
+	flushAliasBuffers := func() {
+		for idx, buffered := range aliasBuffers {
+			track := tools[idx]
+			if track == nil || track.id == "" || track.name == "" {
+				continue
+			}
+			restored, ok := restoreToolArgs(idx, track.name, buffered, aliases, map[int]string{})
+			if ok {
+				b.EmitToolInput(track.id, restored)
+				delete(aliasBuffers, idx)
+			}
+		}
+	}
 
 	finishReason := ""
 	completionTokens := 0
@@ -157,7 +171,9 @@ func (a *Adapter) Stream(ctx context.Context, req *anthropic.Request, upstreamMo
 				}
 				b.StartTool(t.id, t.name)
 				if tc.Function.Arguments != "" {
-					b.EmitToolInput(t.id, tc.Function.Arguments)
+					if restored, ok := restoreToolArgs(tc.Index, t.name, tc.Function.Arguments, aliases, aliasBuffers); ok {
+						b.EmitToolInput(t.id, restored)
+					}
 				}
 			}
 			if ch.FinishReason != "" {
@@ -181,6 +197,7 @@ func (a *Adapter) Stream(ctx context.Context, req *anthropic.Request, upstreamMo
 		}
 	}
 	emitToolCalls(toolParser.Flush())
+	flushAliasBuffers()
 	if completionTokens > 0 {
 		b.SetOutputTokens(completionTokens)
 	}
@@ -234,9 +251,14 @@ type openaiToolDecl struct {
 }
 
 func buildRequest(r *anthropic.Request, model string, passthroughServerTools bool) (map[string]any, error) {
+	body, _, err := buildRequestWithAliases(r, model, passthroughServerTools)
+	return body, err
+}
+
+func buildRequestWithAliases(r *anthropic.Request, model string, passthroughServerTools bool) (map[string]any, map[string]map[string]string, error) {
 	messages, err := convertMessages(r, passthroughServerTools)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	body := map[string]any{
 		"model":    model,
@@ -255,24 +277,118 @@ func buildRequest(r *anthropic.Request, model string, passthroughServerTools boo
 	if len(r.StopSequences) > 0 {
 		body["stop"] = r.StopSequences
 	}
+	aliases := map[string]map[string]string{}
 	if len(r.Tools) > 0 {
 		upstreamTools := anthropic.ToolsForUpstream(r.Tools, passthroughServerTools)
 		if len(upstreamTools) > 0 {
 			tools := make([]openaiTool, 0, len(upstreamTools))
 			for _, t := range upstreamTools {
+				params, toolAliases := sanitizeToolParameters(t.InputSchema)
+				if len(toolAliases) > 0 {
+					aliases[t.Name] = toolAliases
+				}
 				tools = append(tools, openaiTool{
 					Type: "function",
 					Function: openaiToolDecl{
 						Name:        t.Name,
 						Description: t.Description,
-						Parameters:  t.InputSchema,
+						Parameters:  params,
 					},
 				})
 			}
 			body["tools"] = tools
 		}
 	}
-	return body, nil
+	return body, aliases, nil
+}
+
+func sanitizeToolParameters(raw json.RawMessage) (json.RawMessage, map[string]string) {
+	if len(raw) == 0 {
+		return raw, nil
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		return raw, nil
+	}
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		return raw, nil
+	}
+	aliases := map[string]string{}
+	for name, value := range props {
+		if name != "type" {
+			continue
+		}
+		alias := "_fcc_arg_type"
+		if _, exists := props[alias]; exists {
+			for i := 2; ; i++ {
+				candidate := fmt.Sprintf("_fcc_arg_type_%d", i)
+				if _, taken := props[candidate]; !taken {
+					alias = candidate
+					break
+				}
+			}
+		}
+		props[alias] = value
+		delete(props, name)
+		aliases[alias] = name
+		if required, ok := schema["required"].([]any); ok {
+			for i, item := range required {
+				if item == name {
+					required[i] = alias
+				}
+			}
+		}
+	}
+	if len(aliases) == 0 {
+		return raw, nil
+	}
+	out, err := json.Marshal(schema)
+	if err != nil {
+		return raw, nil
+	}
+	return out, aliases
+}
+
+func restoreToolArgs(index int, toolName, args string, aliases map[string]map[string]string, buffers map[int]string) (string, bool) {
+	toolAliases := aliases[toolName]
+	if len(toolAliases) == 0 {
+		return args, true
+	}
+	buffered := buffers[index] + args
+	var parsed any
+	if err := json.Unmarshal([]byte(buffered), &parsed); err != nil {
+		buffers[index] = buffered
+		return "", false
+	}
+	delete(buffers, index)
+	restored := restoreAliasValue(parsed, toolAliases)
+	out, err := json.Marshal(restored)
+	if err != nil {
+		return args, true
+	}
+	return string(out), true
+}
+
+func restoreAliasValue(value any, aliases map[string]string) any {
+	switch v := value.(type) {
+	case map[string]any:
+		out := map[string]any{}
+		for key, item := range v {
+			if original, ok := aliases[key]; ok {
+				key = original
+			}
+			out[key] = restoreAliasValue(item, aliases)
+		}
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = restoreAliasValue(item, aliases)
+		}
+		return out
+	}
+	return value
 }
 
 func convertMessages(r *anthropic.Request, passthroughServerTools bool) ([]openaiMessage, error) {
