@@ -38,9 +38,10 @@ const (
 )
 
 type ProviderConfig struct {
-	Kind    ProviderKind
-	BaseURL string
-	APIKey  string
+	Kind                               ProviderKind
+	BaseURL                            string
+	APIKey                             string
+	ExperimentalPassthroughServerTools bool
 }
 
 // Load reads the YAML config at path and validates it.
@@ -111,9 +112,10 @@ func fromDoc(doc yamlMap) (*Config, error) {
 			return nil, fmt.Errorf("providers.%s: expected a map", name)
 		}
 		pc := ProviderConfig{
-			Kind:    ProviderKind(stringAt(entry, "kind")),
-			BaseURL: strings.TrimRight(expandEnv(stringAt(entry, "base_url")), "/"),
-			APIKey:  expandEnv(stringAt(entry, "api_key")),
+			Kind:                               ProviderKind(stringAt(entry, "kind")),
+			BaseURL:                            strings.TrimRight(expandEnv(stringAt(entry, "base_url")), "/"),
+			APIKey:                             expandEnv(stringAt(entry, "api_key")),
+			ExperimentalPassthroughServerTools: boolAt(entry, "experimental_passthrough_server_tools"),
 		}
 		if pc.Kind != KindOpenAIChat && pc.Kind != KindOpenAIResponses {
 			return nil, fmt.Errorf("providers.%s: unknown kind %q (want openai_chat|openai_responses)", name, pc.Kind)
@@ -147,6 +149,13 @@ func stringAt(m yamlMap, key string) string {
 		return v
 	}
 	return ""
+}
+
+func boolAt(m yamlMap, key string) bool {
+	if v, ok := m[key].(bool); ok {
+		return v
+	}
+	return false
 }
 
 // expandEnv replaces ${NAME} segments with os.Getenv("NAME"). Missing -> "".

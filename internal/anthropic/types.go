@@ -141,6 +141,13 @@ func FilterClientTools(tools []Tool) []Tool {
 	return out
 }
 
+func ToolsForUpstream(tools []Tool, passthroughServerTools bool) []Tool {
+	if passthroughServerTools {
+		return tools
+	}
+	return FilterClientTools(tools)
+}
+
 // IsServerToolBlock reports whether a message block describes an Anthropic
 // server-side tool interaction that the upstream cannot interpret.
 func IsServerToolBlock(b Block) bool {
@@ -171,6 +178,13 @@ func StripServerToolBlocks(blocks []Block) []Block {
 		out = append(out, b)
 	}
 	return out
+}
+
+func BlocksForUpstream(blocks []Block, passthroughServerTools bool) []Block {
+	if passthroughServerTools {
+		return blocks
+	}
+	return StripServerToolBlocks(blocks)
 }
 
 // SystemText collapses the Anthropic-style system field into a single string.

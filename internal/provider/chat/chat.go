@@ -25,7 +25,7 @@ func New(pc config.ProviderConfig) (provider.Adapter, error) {
 // Stream translates an Anthropic Request to OpenAI /chat/completions and
 // converts the streamed response back into Anthropic SSE events via b.
 func (a *Adapter) Stream(ctx context.Context, req *anthropic.Request, upstreamModel string, b *sse.Builder) error {
-	body, err := buildRequest(req, upstreamModel)
+	body, err := buildRequest(req, upstreamModel, a.pc.ExperimentalPassthroughServerTools)
 	if err != nil {
 		return err
 	}
@@ -177,8 +177,8 @@ type openaiToolDecl struct {
 	Parameters  json.RawMessage `json:"parameters,omitempty"`
 }
 
-func buildRequest(r *anthropic.Request, model string) (map[string]any, error) {
-	messages, err := convertMessages(r)
+func buildRequest(r *anthropic.Request, model string, passthroughServerTools bool) (map[string]any, error) {
+	messages, err := convertMessages(r, passthroughServerTools)
 	if err != nil {
 		return nil, err
 	}
@@ -200,10 +200,10 @@ func buildRequest(r *anthropic.Request, model string) (map[string]any, error) {
 		body["stop"] = r.StopSequences
 	}
 	if len(r.Tools) > 0 {
-		clientTools := anthropic.FilterClientTools(r.Tools)
-		if len(clientTools) > 0 {
-			tools := make([]openaiTool, 0, len(clientTools))
-			for _, t := range clientTools {
+		upstreamTools := anthropic.ToolsForUpstream(r.Tools, passthroughServerTools)
+		if len(upstreamTools) > 0 {
+			tools := make([]openaiTool, 0, len(upstreamTools))
+			for _, t := range upstreamTools {
 				tools = append(tools, openaiTool{
 					Type: "function",
 					Function: openaiToolDecl{
@@ -219,7 +219,7 @@ func buildRequest(r *anthropic.Request, model string) (map[string]any, error) {
 	return body, nil
 }
 
-func convertMessages(r *anthropic.Request) ([]openaiMessage, error) {
+func convertMessages(r *anthropic.Request, passthroughServerTools bool) ([]openaiMessage, error) {
 	var out []openaiMessage
 
 	if sysText, err := anthropic.SystemText(r.System); err != nil {
@@ -229,7 +229,7 @@ func convertMessages(r *anthropic.Request) ([]openaiMessage, error) {
 	}
 
 	for _, m := range r.Messages {
-		blocks := anthropic.StripServerToolBlocks(m.Content.AsBlocks())
+		blocks := anthropic.BlocksForUpstream(m.Content.AsBlocks(), passthroughServerTools)
 		switch m.Role {
 		case "user":
 			msgs, err := convertUserBlocks(blocks)
@@ -264,7 +264,10 @@ func convertUserBlocks(blocks []anthropic.Block) ([]openaiMessage, error) {
 		switch b.Type {
 		case "text":
 			textParts = append(textParts, b.Text)
-		case "tool_result":
+		case "tool_result", "web_search_tool_result", "web_fetch_tool_result", "code_execution_tool_result", "computer_use_tool_result", "mcp_tool_result":
+			if b.ToolUseID == "" {
+				continue
+			}
 			flush()
 			text, err := anthropic.ToolResultText(b.Content)
 			if err != nil {
@@ -293,15 +296,15 @@ func convertAssistantBlocks(blocks []anthropic.Block) ([]openaiMessage, error) {
 	var textParts []string
 	var toolCalls []openaiToolRef
 	for _, b := range blocks {
-		if anthropic.IsServerToolBlock(b) {
-			continue
-		}
 		switch b.Type {
 		case "text":
 			textParts = append(textParts, b.Text)
 		case "thinking", "redacted_thinking":
 			// drop: OpenAI chat does not accept Anthropic thinking blocks
-		case "tool_use":
+		case "tool_use", "server_tool_use", "mcp_tool_use":
+			if b.ID == "" || b.Name == "" {
+				continue
+			}
 			args := "{}"
 			if len(b.Input) > 0 {
 				args = string(b.Input)

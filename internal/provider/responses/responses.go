@@ -75,7 +75,7 @@ func (a *Adapter) streamOnce(
 		}
 	}
 
-	body, err := buildRequest(req, upstreamModel)
+	body, err := buildRequest(req, upstreamModel, a.pc.ExperimentalPassthroughServerTools)
 	if err != nil {
 		return err
 	}
@@ -304,8 +304,8 @@ type toolDecl struct {
 	Parameters  json.RawMessage `json:"parameters,omitempty"`
 }
 
-func buildRequest(r *anthropic.Request, model string) (map[string]any, error) {
-	items, err := convertMessagesToItems(r.Messages)
+func buildRequest(r *anthropic.Request, model string, passthroughServerTools bool) (map[string]any, error) {
+	items, err := convertMessagesToItems(r.Messages, passthroughServerTools)
 	if err != nil {
 		return nil, err
 	}
@@ -319,11 +319,11 @@ func buildRequest(r *anthropic.Request, model string) (map[string]any, error) {
 	} else if sysText != "" {
 		body["instructions"] = sysText
 	}
-	applyCommonFields(body, r)
+	applyCommonFields(body, r, passthroughServerTools)
 	return body, nil
 }
 
-func applyCommonFields(body map[string]any, r *anthropic.Request) {
+func applyCommonFields(body map[string]any, r *anthropic.Request, passthroughServerTools bool) {
 	if r.MaxTokens > 0 {
 		body["max_output_tokens"] = r.MaxTokens
 	}
@@ -341,10 +341,10 @@ func applyCommonFields(body map[string]any, r *anthropic.Request) {
 		body["store"] = false
 	}
 	if len(r.Tools) > 0 {
-		clientTools := anthropic.FilterClientTools(r.Tools)
-		if len(clientTools) > 0 {
-			tools := make([]toolDecl, 0, len(clientTools))
-			for _, t := range clientTools {
+		upstreamTools := anthropic.ToolsForUpstream(r.Tools, passthroughServerTools)
+		if len(upstreamTools) > 0 {
+			tools := make([]toolDecl, 0, len(upstreamTools))
+			for _, t := range upstreamTools {
 				tools = append(tools, toolDecl{
 					Type:        "function",
 					Name:        t.Name,
@@ -357,10 +357,10 @@ func applyCommonFields(body map[string]any, r *anthropic.Request) {
 	}
 }
 
-func convertMessagesToItems(msgs []anthropic.Message) ([]inputItem, error) {
+func convertMessagesToItems(msgs []anthropic.Message, passthroughServerTools bool) ([]inputItem, error) {
 	var out []inputItem
 	for _, m := range msgs {
-		blocks := anthropic.StripServerToolBlocks(m.Content.AsBlocks())
+		blocks := anthropic.BlocksForUpstream(m.Content.AsBlocks(), passthroughServerTools)
 		switch m.Role {
 		case "user":
 			msg := inputItem{Type: "message", Role: "user"}
@@ -368,7 +368,10 @@ func convertMessagesToItems(msgs []anthropic.Message) ([]inputItem, error) {
 				switch b.Type {
 				case "text":
 					msg.Content = append(msg.Content, inputContentPart{Type: "input_text", Text: b.Text})
-				case "tool_result":
+				case "tool_result", "web_search_tool_result", "web_fetch_tool_result", "code_execution_tool_result", "computer_use_tool_result", "mcp_tool_result":
+					if b.ToolUseID == "" {
+						continue
+					}
 					if len(msg.Content) > 0 {
 						out = append(out, msg)
 						msg = inputItem{Type: "message", Role: "user"}
@@ -398,7 +401,10 @@ func convertMessagesToItems(msgs []anthropic.Message) ([]inputItem, error) {
 					textParts = append(textParts, b.Text)
 				case "thinking", "redacted_thinking":
 					// drop replay: Responses API does not accept raw thinking blocks
-				case "tool_use":
+				case "tool_use", "server_tool_use", "mcp_tool_use":
+					if b.ID == "" || b.Name == "" {
+						continue
+					}
 					args := "{}"
 					if len(b.Input) > 0 {
 						args = string(b.Input)
