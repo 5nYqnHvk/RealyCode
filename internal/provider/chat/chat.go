@@ -12,6 +12,7 @@ import (
 	"github.com/relaycode/relaycode/internal/config"
 	"github.com/relaycode/relaycode/internal/provider"
 	"github.com/relaycode/relaycode/internal/sse"
+	"github.com/relaycode/relaycode/internal/streamparse"
 )
 
 type Adapter struct {
@@ -95,6 +96,16 @@ func (a *Adapter) Stream(ctx context.Context, req *anthropic.Request, upstreamMo
 
 	finishReason := ""
 	completionTokens := 0
+	thinkParser := streamparse.ThinkTagParser{}
+	emitParsedText := func(text string) {
+		for _, chunk := range thinkParser.Feed(text) {
+			if chunk.Kind == streamparse.ThinkingChunk {
+				b.EmitThinking(chunk.Content)
+			} else {
+				b.EmitText(chunk.Content)
+			}
+		}
+	}
 
 	err = provider.IterSSE(reader, func(ev provider.SSEEvent) error {
 		if ev.Data == "" || ev.Data == "[DONE]" {
@@ -113,7 +124,7 @@ func (a *Adapter) Stream(ctx context.Context, req *anthropic.Request, upstreamMo
 				b.EmitThinking(d.ReasoningContent)
 			}
 			if d.Content != "" {
-				b.EmitText(d.Content)
+				emitParsedText(d.Content)
 			}
 			for _, tc := range d.ToolCalls {
 				t, ok := tools[tc.Index]
@@ -146,6 +157,13 @@ func (a *Adapter) Stream(ctx context.Context, req *anthropic.Request, upstreamMo
 		return nil
 	}
 
+	if tail := thinkParser.Flush(); tail != nil {
+		if tail.Kind == streamparse.ThinkingChunk {
+			b.EmitThinking(tail.Content)
+		} else {
+			b.EmitText(tail.Content)
+		}
+	}
 	if completionTokens > 0 {
 		b.SetOutputTokens(completionTokens)
 	}

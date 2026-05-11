@@ -15,6 +15,7 @@ import (
 	"github.com/relaycode/relaycode/internal/provider"
 	"github.com/relaycode/relaycode/internal/session"
 	"github.com/relaycode/relaycode/internal/sse"
+	"github.com/relaycode/relaycode/internal/streamparse"
 )
 
 type Adapter struct {
@@ -127,6 +128,16 @@ func (a *Adapter) streamOnce(
 	items := map[string]*itemState{}
 
 	stripper := tagStripper{}
+	thinkParser := streamparse.ThinkTagParser{}
+	emitParsedText := func(text string) {
+		for _, chunk := range thinkParser.Feed(text) {
+			if chunk.Kind == streamparse.ThinkingChunk {
+				b.EmitThinking(chunk.Content)
+			} else {
+				b.EmitText(chunk.Content)
+			}
+		}
+	}
 	stopReason := "end_turn"
 	outputTokens := 0
 	inputTokens := 0
@@ -172,7 +183,7 @@ func (a *Adapter) streamOnce(
 				return nil
 			}
 			if safe := stripper.Feed(header.Delta); safe != "" {
-				b.EmitText(safe)
+				emitParsedText(safe)
 			}
 
 		case "response.output_text.done":
@@ -283,7 +294,14 @@ func (a *Adapter) streamOnce(
 	}
 
 	if tail := stripper.Flush(); tail != "" {
-		b.EmitText(tail)
+		emitParsedText(tail)
+	}
+	if tail := thinkParser.Flush(); tail != nil {
+		if tail.Kind == streamparse.ThinkingChunk {
+			b.EmitThinking(tail.Content)
+		} else {
+			b.EmitText(tail.Content)
+		}
 	}
 
 	if outputTokens > 0 {
