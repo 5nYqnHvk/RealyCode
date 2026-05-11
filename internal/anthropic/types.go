@@ -145,6 +145,7 @@ type Tool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	InputSchema json.RawMessage `json:"input_schema,omitempty"`
+	Strict      *bool           `json:"strict,omitempty"`
 }
 
 // IsServerTool reports whether this tool is an Anthropic-managed server tool

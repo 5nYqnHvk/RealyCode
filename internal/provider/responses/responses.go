@@ -13,6 +13,7 @@ import (
 	"github.com/5nYqnHvk/RelayCode/internal/anthropic"
 	"github.com/5nYqnHvk/RelayCode/internal/config"
 	"github.com/5nYqnHvk/RelayCode/internal/provider"
+	"github.com/5nYqnHvk/RelayCode/internal/provider/toolargs"
 	"github.com/5nYqnHvk/RelayCode/internal/session"
 	"github.com/5nYqnHvk/RelayCode/internal/sse"
 	"github.com/5nYqnHvk/RelayCode/internal/streamparse"
@@ -90,13 +91,19 @@ func (a *Adapter) streamOnce(
 		if sid := req.SessionID(); sid != "" {
 			cacheKey = sid
 			promptCacheOk = true
-		} else {
+		} else if lookup.InstructionsHash != "" && lookup.ToolsHash != "" {
 			cacheKey = lookup.InstructionsHash + ":" + lookup.ToolsHash
-			promptCacheOk = cacheKey != ":"
+			promptCacheOk = true
+		} else if lookup.InstructionsHash != "" {
+			cacheKey = lookup.InstructionsHash
+			promptCacheOk = true
+		} else if lookup.ToolsHash != "" {
+			cacheKey = lookup.ToolsHash
+			promptCacheOk = true
 		}
 	}
 
-	body, err := buildRequest(req, upstreamModel, a.pc.ExperimentalPassthroughServerTools)
+	body, aliases, err := buildRequestWithAliases(req, upstreamModel, a.pc.ExperimentalPassthroughServerTools)
 	if err != nil {
 		return err
 	}
@@ -121,11 +128,16 @@ func (a *Adapter) streamOnce(
 	b.Start()
 
 	type itemState struct {
-		kind   string
-		callID string
-		name   string
+		index      int
+		kind       string
+		callID     string
+		name       string
+		args       string
+		toolClosed bool
 	}
 	items := map[string]*itemState{}
+	aliasBuffers := map[int]string{}
+	emittedToolCall := false
 
 	stripper := tagStripper{}
 	thinkParser := streamparse.ThinkTagParser{}
@@ -186,10 +198,11 @@ func (a *Adapter) streamOnce(
 			if err := json.Unmarshal([]byte(ev.Data), &wrap); err != nil {
 				return nil
 			}
-			st := &itemState{kind: wrap.Item.Type, callID: wrap.Item.CallID, name: wrap.Item.Name}
+			st := &itemState{index: len(items), kind: wrap.Item.Type, callID: wrap.Item.CallID, name: wrap.Item.Name}
 			items[wrap.Item.ID] = st
 			if st.kind == "function_call" && st.callID != "" && st.name != "" {
 				b.StartTool(st.callID, st.name)
+				emittedToolCall = true
 			}
 
 		case "response.output_text.delta":
@@ -213,14 +226,24 @@ func (a *Adapter) streamOnce(
 			if st == nil || st.callID == "" {
 				return nil
 			}
-			b.EmitToolInput(st.callID, header.Delta)
+			st.args += header.Delta
+			if restored, ok := toolargs.RestoreArgs(st.index, st.name, header.Delta, aliases, aliasBuffers); ok {
+				b.EmitToolInput(st.callID, restored)
+			}
 
 		case "response.function_call_arguments.done":
 			st := items[header.ItemID]
 			if st == nil || st.callID == "" {
 				return nil
 			}
+			if buffered := aliasBuffers[st.index]; buffered != "" {
+				if restored, ok := toolargs.RestoreArgs(st.index, st.name, "", aliases, aliasBuffers); ok {
+					b.EmitToolInput(st.callID, restored)
+				}
+			}
 			b.StopTool(st.callID)
+			st.toolClosed = true
+			emittedToolCall = true
 
 		case "response.output_item.done":
 			if handled, err := emitWebSearchCall(ev.Data, b); err != nil {
@@ -230,15 +253,41 @@ func (a *Adapter) streamOnce(
 			}
 			var wrap struct {
 				Item struct {
-					ID   string `json:"id"`
-					Type string `json:"type"`
+					ID        string `json:"id"`
+					Type      string `json:"type"`
+					CallID    string `json:"call_id,omitempty"`
+					Name      string `json:"name,omitempty"`
+					Arguments string `json:"arguments,omitempty"`
 				} `json:"item"`
 			}
 			if err := json.Unmarshal([]byte(ev.Data), &wrap); err != nil {
 				return nil
 			}
-			if st, ok := items[wrap.Item.ID]; ok && st.kind == "function_call" && st.callID != "" {
-				b.StopTool(st.callID)
+			st := items[wrap.Item.ID]
+			if st == nil {
+				st = &itemState{index: len(items), kind: wrap.Item.Type, callID: wrap.Item.CallID, name: wrap.Item.Name}
+				items[wrap.Item.ID] = st
+			}
+			if st.kind == "" {
+				st.kind = wrap.Item.Type
+			}
+			if st.callID == "" {
+				st.callID = wrap.Item.CallID
+			}
+			if st.name == "" {
+				st.name = wrap.Item.Name
+			}
+			if st.kind == "function_call" && st.callID != "" && st.name != "" {
+				if !st.toolClosed {
+					b.StartTool(st.callID, st.name)
+					if st.args == "" && wrap.Item.Arguments != "" {
+						b.EmitToolInput(st.callID, toolargs.RestoreCompleteArgs(st.name, wrap.Item.Arguments, aliases))
+						st.args = wrap.Item.Arguments
+					}
+					b.StopTool(st.callID)
+					st.toolClosed = true
+				}
+				emittedToolCall = true
 			}
 
 		case "response.completed":
@@ -321,6 +370,9 @@ func (a *Adapter) streamOnce(
 	}
 	emitToolCalls(toolParser.Flush())
 
+	if emittedToolCall {
+		stopReason = "tool_use"
+	}
 	if outputTokens > 0 {
 		b.SetOutputTokens(outputTokens)
 	}
@@ -417,14 +469,20 @@ type toolDecl struct {
 	Type              string          `json:"type"`
 	Name              string          `json:"name,omitempty"`
 	Description       string          `json:"description,omitempty"`
+	Strict            bool            `json:"strict"`
 	Parameters        json.RawMessage `json:"parameters,omitempty"`
 	ExternalWebAccess *bool           `json:"external_web_access,omitempty"`
 }
 
 func buildRequest(r *anthropic.Request, model string, passthroughServerTools bool) (map[string]any, error) {
+	body, _, err := buildRequestWithAliases(r, model, passthroughServerTools)
+	return body, err
+}
+
+func buildRequestWithAliases(r *anthropic.Request, model string, passthroughServerTools bool) (map[string]any, map[string]map[string]string, error) {
 	items, err := convertMessagesToItems(r.Messages, passthroughServerTools)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	body := map[string]any{
 		"model":  model,
@@ -432,15 +490,16 @@ func buildRequest(r *anthropic.Request, model string, passthroughServerTools boo
 		"stream": true,
 	}
 	if sysText, err := anthropic.SystemText(r.System); err != nil {
-		return nil, err
+		return nil, nil, err
 	} else if sysText != "" {
 		body["instructions"] = sysText
 	}
-	applyCommonFields(body, r, passthroughServerTools)
-	return body, nil
+	aliases := applyCommonFields(body, r, passthroughServerTools)
+	return body, aliases, nil
 }
 
-func applyCommonFields(body map[string]any, r *anthropic.Request, passthroughServerTools bool) {
+func applyCommonFields(body map[string]any, r *anthropic.Request, passthroughServerTools bool) map[string]map[string]string {
+	aliases := map[string]map[string]string{}
 	if r.MaxTokens > 0 {
 		body["max_output_tokens"] = r.MaxTokens
 	}
@@ -465,19 +524,29 @@ func applyCommonFields(body map[string]any, r *anthropic.Request, passthroughSer
 		if len(upstreamTools) > 0 {
 			tools := make([]toolDecl, 0, len(upstreamTools))
 			for _, t := range upstreamTools {
-				tools = append(tools, toResponsesToolDecl(t))
+				params, toolAliases := toolargs.SanitizeParameters(t.InputSchema)
+				if len(toolAliases) > 0 {
+					aliases[t.Name] = toolAliases
+				}
+				tools = append(tools, toResponsesToolDecl(t, params))
 			}
 			body["tools"] = tools
 		}
 	}
+	return aliases
 }
 
-func toResponsesToolDecl(t anthropic.Tool) toolDecl {
+func toResponsesToolDecl(t anthropic.Tool, params json.RawMessage) toolDecl {
+	strict := false
+	if t.Strict != nil {
+		strict = *t.Strict
+	}
 	return toolDecl{
 		Type:        "function",
 		Name:        t.Name,
 		Description: t.Description,
-		Parameters:  t.InputSchema,
+		Strict:      strict,
+		Parameters:  params,
 	}
 }
 

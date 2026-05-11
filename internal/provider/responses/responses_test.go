@@ -1,13 +1,17 @@
 package responses
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/5nYqnHvk/RelayCode/internal/anthropic"
+	"github.com/5nYqnHvk/RelayCode/internal/config"
 	"github.com/5nYqnHvk/RelayCode/internal/sse"
 )
 
@@ -17,10 +21,26 @@ func (nopResponseWriter) Header() http.Header         { return http.Header{} }
 func (nopResponseWriter) Write(p []byte) (int, error) { return len(p), nil }
 func (nopResponseWriter) WriteHeader(statusCode int)  {}
 
+type recordResponseWriter struct {
+	header http.Header
+	body   strings.Builder
+}
+
+func (w *recordResponseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = http.Header{}
+	}
+	return w.header
+}
+func (w *recordResponseWriter) Write(p []byte) (int, error) { return w.body.Write(p) }
+func (w *recordResponseWriter) WriteHeader(statusCode int)  {}
+func (w *recordResponseWriter) Flush()                      {}
+
 func TestBuildRequestFiltersServerToolsByDefault(t *testing.T) {
+	strict := true
 	req := &anthropic.Request{
 		Tools: []anthropic.Tool{
-			{Name: "bash", InputSchema: json.RawMessage(`{"type":"object"}`)},
+			{Name: "bash", InputSchema: json.RawMessage(`{"type":"object"}`), Strict: &strict},
 			{Name: "web_search", Type: "web_search_20250305", InputSchema: json.RawMessage(`{"type":"object"}`)},
 		},
 	}
@@ -30,7 +50,7 @@ func TestBuildRequestFiltersServerToolsByDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	tools := body["tools"].([]toolDecl)
-	if len(tools) != 1 || tools[0].Name != "bash" {
+	if len(tools) != 1 || tools[0].Name != "bash" || !tools[0].Strict {
 		t.Fatalf("tools = %+v", tools)
 	}
 }
@@ -45,6 +65,32 @@ func TestBuildRequestMapsOutputConfigEffort(t *testing.T) {
 	reasoning := body["reasoning"].(map[string]any)
 	if reasoning["effort"] != "xhigh" {
 		t.Fatalf("reasoning.effort = %v", reasoning["effort"])
+	}
+}
+
+func TestBuildRequestAliasesTypeArgument(t *testing.T) {
+	req := &anthropic.Request{Tools: []anthropic.Tool{{
+		Name:        "NotionLike",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"type":{"type":"string"},"name":{"type":"string"}},"required":["type"]}`),
+	}}}
+	body, aliases, err := buildRequestWithAliases(req, "gpt", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if aliases["NotionLike"]["_fcc_arg_type"] != "type" {
+		t.Fatalf("aliases = %+v", aliases)
+	}
+	tools := body["tools"].([]toolDecl)
+	var params map[string]any
+	if err := json.Unmarshal(tools[0].Parameters, &params); err != nil {
+		t.Fatal(err)
+	}
+	props := params["properties"].(map[string]any)
+	if _, ok := props["type"]; ok {
+		t.Fatalf("schema still has type property: %+v", props)
+	}
+	if _, ok := props["_fcc_arg_type"]; !ok {
+		t.Fatalf("schema missing alias property: %+v", props)
 	}
 }
 
@@ -64,7 +110,7 @@ func TestBuildRequestPassesServerToolsAsFunctionsWhenExperimental(t *testing.T) 
 	if len(tools) != 2 {
 		t.Fatalf("tools = %+v", tools)
 	}
-	if tools[0].Type != "function" || tools[0].Name != "bash" {
+	if tools[0].Type != "function" || tools[0].Name != "bash" || tools[0].Strict {
 		t.Fatalf("function tool = %+v", tools[0])
 	}
 	if tools[1].Type != "function" || tools[1].Name != "web_search" || tools[1].ExternalWebAccess != nil {
@@ -151,5 +197,37 @@ func TestBuildRequestDropsWebSearchReplayItems(t *testing.T) {
 	}
 	if items[1].Type != "function_call_output" || items[1].CallID != "call_2" || items[1].Output != "/repo" {
 		t.Fatalf("function output item = %+v", items[1])
+	}
+}
+
+func TestStreamEmitsDoneOnlyFunctionCall(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("event: response.output_item.done\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.output_item.done","item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"NotionLike","arguments":"{\"_fcc_arg_type\":\"page\"}"}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.completed\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":1,"output_tokens":2},"output":[{"type":"function_call"}]}}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	adapter := &Adapter{pc: config.ProviderConfig{BaseURL: server.URL, APIKey: "key"}, client: server.Client()}
+	req := &anthropic.Request{
+		Messages: []anthropic.Message{{Role: "user", Content: anthropic.Content{Raw: "call tool"}}},
+		Tools: []anthropic.Tool{{
+			Name:        "NotionLike",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"type":{"type":"string"}},"required":["type"]}`),
+		}},
+	}
+	rw := &recordResponseWriter{}
+	builder := sse.NewBuilder(sse.NewWriter(rw), "msg", "model", 1)
+	if err := adapter.Stream(context.Background(), req, "gpt", builder); err != nil {
+		t.Fatal(err)
+	}
+	out := rw.body.String()
+	for _, want := range []string{`"type":"tool_use"`, `"name":"NotionLike"`, `"partial_json":"{\"type\":\"page\"}"`, `"stop_reason":"tool_use"`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %s:\n%s", want, out)
+		}
 	}
 }
