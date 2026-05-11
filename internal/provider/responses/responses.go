@@ -341,23 +341,26 @@ func applyCommonFields(body map[string]any, r *anthropic.Request) {
 		body["store"] = false
 	}
 	if len(r.Tools) > 0 {
-		tools := make([]toolDecl, 0, len(r.Tools))
-		for _, t := range r.Tools {
-			tools = append(tools, toolDecl{
-				Type:        "function",
-				Name:        t.Name,
-				Description: t.Description,
-				Parameters:  t.InputSchema,
-			})
+		clientTools := anthropic.FilterClientTools(r.Tools)
+		if len(clientTools) > 0 {
+			tools := make([]toolDecl, 0, len(clientTools))
+			for _, t := range clientTools {
+				tools = append(tools, toolDecl{
+					Type:        "function",
+					Name:        t.Name,
+					Description: t.Description,
+					Parameters:  t.InputSchema,
+				})
+			}
+			body["tools"] = tools
 		}
-		body["tools"] = tools
 	}
 }
 
 func convertMessagesToItems(msgs []anthropic.Message) ([]inputItem, error) {
 	var out []inputItem
 	for _, m := range msgs {
-		blocks := m.Content.AsBlocks()
+		blocks := anthropic.StripServerToolBlocks(m.Content.AsBlocks())
 		switch m.Role {
 		case "user":
 			msg := inputItem{Type: "message", Role: "user"}

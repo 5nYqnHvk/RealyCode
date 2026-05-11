@@ -200,18 +200,21 @@ func buildRequest(r *anthropic.Request, model string) (map[string]any, error) {
 		body["stop"] = r.StopSequences
 	}
 	if len(r.Tools) > 0 {
-		tools := make([]openaiTool, 0, len(r.Tools))
-		for _, t := range r.Tools {
-			tools = append(tools, openaiTool{
-				Type: "function",
-				Function: openaiToolDecl{
-					Name:        t.Name,
-					Description: t.Description,
-					Parameters:  t.InputSchema,
-				},
-			})
+		clientTools := anthropic.FilterClientTools(r.Tools)
+		if len(clientTools) > 0 {
+			tools := make([]openaiTool, 0, len(clientTools))
+			for _, t := range clientTools {
+				tools = append(tools, openaiTool{
+					Type: "function",
+					Function: openaiToolDecl{
+						Name:        t.Name,
+						Description: t.Description,
+						Parameters:  t.InputSchema,
+					},
+				})
+			}
+			body["tools"] = tools
 		}
-		body["tools"] = tools
 	}
 	return body, nil
 }
@@ -226,7 +229,7 @@ func convertMessages(r *anthropic.Request) ([]openaiMessage, error) {
 	}
 
 	for _, m := range r.Messages {
-		blocks := m.Content.AsBlocks()
+		blocks := anthropic.StripServerToolBlocks(m.Content.AsBlocks())
 		switch m.Role {
 		case "user":
 			msgs, err := convertUserBlocks(blocks)
@@ -274,6 +277,12 @@ func convertUserBlocks(blocks []anthropic.Block) ([]openaiMessage, error) {
 			})
 		case "image":
 			return nil, fmt.Errorf("image user blocks not supported by openai_chat adapter")
+		default:
+			if anthropic.IsServerToolBlock(b) {
+				// Server-tool records from a prior turn are opaque to the
+				// upstream; drop rather than forward broken structure.
+				continue
+			}
 		}
 	}
 	flush()
@@ -284,6 +293,9 @@ func convertAssistantBlocks(blocks []anthropic.Block) ([]openaiMessage, error) {
 	var textParts []string
 	var toolCalls []openaiToolRef
 	for _, b := range blocks {
+		if anthropic.IsServerToolBlock(b) {
+			continue
+		}
 		switch b.Type {
 		case "text":
 			textParts = append(textParts, b.Text)

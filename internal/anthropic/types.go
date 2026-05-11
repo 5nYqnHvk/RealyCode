@@ -89,9 +89,88 @@ type Block struct {
 
 // Tool is one function tool exposed to the model.
 type Tool struct {
+	// Type distinguishes regular function tools from Anthropic server tools
+	// like "web_search_20250305" or "web_fetch_20250826". When Type is empty
+	// or "custom" the tool is a regular function the upstream model is
+	// expected to call; non-empty server-tool Type values indicate Anthropic
+	// would execute the tool itself, and the upstream (OpenAI) does not know
+	// how to handle them.
+	Type        string          `json:"type,omitempty"`
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	InputSchema json.RawMessage `json:"input_schema,omitempty"`
+}
+
+// IsServerTool reports whether this tool is an Anthropic-managed server tool
+// (web_search / web_fetch / code execution / etc). These must be stripped
+// from requests forwarded to non-Anthropic backends.
+func (t Tool) IsServerTool() bool {
+	return isServerToolType(t.Type) || isServerToolName(t.Name)
+}
+
+func isServerToolType(typ string) bool {
+	if typ == "" || typ == "custom" || typ == "function" {
+		return false
+	}
+	// Any tool type that doesn't round-trip as plain "function" is a
+	// provider-side tool the upstream OpenAI endpoint cannot execute.
+	return true
+}
+
+func isServerToolName(name string) bool {
+	switch name {
+	case "web_search", "web_fetch":
+		return true
+	}
+	return false
+}
+
+// FilterClientTools returns the subset of tools the upstream backend can
+// actually execute (i.e. everything that is not an Anthropic server tool).
+func FilterClientTools(tools []Tool) []Tool {
+	if len(tools) == 0 {
+		return nil
+	}
+	out := make([]Tool, 0, len(tools))
+	for _, t := range tools {
+		if t.IsServerTool() {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
+// IsServerToolBlock reports whether a message block describes an Anthropic
+// server-side tool interaction that the upstream cannot interpret.
+func IsServerToolBlock(b Block) bool {
+	switch b.Type {
+	case "server_tool_use",
+		"web_search_tool_result",
+		"web_fetch_tool_result",
+		"code_execution_tool_result",
+		"computer_use_tool_result",
+		"mcp_tool_use",
+		"mcp_tool_result":
+		return true
+	}
+	return false
+}
+
+// StripServerToolBlocks returns a copy of blocks with any
+// server-tool-related block removed.
+func StripServerToolBlocks(blocks []Block) []Block {
+	if len(blocks) == 0 {
+		return blocks
+	}
+	out := make([]Block, 0, len(blocks))
+	for _, b := range blocks {
+		if IsServerToolBlock(b) {
+			continue
+		}
+		out = append(out, b)
+	}
+	return out
 }
 
 // SystemText collapses the Anthropic-style system field into a single string.
