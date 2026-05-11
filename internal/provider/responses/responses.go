@@ -52,6 +52,7 @@ func (a *Adapter) Stream(ctx context.Context, req *anthropic.Request, upstreamMo
 	stopReason := "end_turn"
 	outputTokens := 0
 	upstreamErrMsg := ""
+	stripper := tagStripper{}
 
 	err = provider.IterSSE(reader, func(ev provider.SSEEvent) error {
 		if ev.Data == "" {
@@ -86,9 +87,15 @@ func (a *Adapter) Stream(ctx context.Context, req *anthropic.Request, upstreamMo
 			}
 
 		case "response.output_text.delta":
-			if header.Delta != "" {
-				b.EmitText(header.Delta)
+			if header.Delta == "" {
+				return nil
 			}
+			if safe := stripper.Feed(header.Delta); safe != "" {
+				b.EmitText(safe)
+			}
+
+		case "response.output_text.done":
+			stripper.Reset()
 
 		case "response.reasoning_summary_text.delta", "response.reasoning.delta", "response.reasoning_text.delta":
 			if header.Delta != "" {
@@ -178,6 +185,10 @@ func (a *Adapter) Stream(ctx context.Context, req *anthropic.Request, upstreamMo
 	if upstreamErrMsg != "" {
 		b.FinishWithError(upstreamErrMsg)
 		return nil
+	}
+
+	if tail := stripper.Flush(); tail != "" {
+		b.EmitText(tail)
 	}
 
 	if outputTokens > 0 {
