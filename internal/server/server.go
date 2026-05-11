@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
@@ -166,9 +168,13 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req anthropic.Request
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	rawBody, _ := io.ReadAll(r.Body)
+	if err := json.Unmarshal(rawBody, &req); err != nil {
 		http.Error(w, fmt.Sprintf(`{"type":"error","error":{"type":"invalid_request_error","message":%q}}`, err.Error()), http.StatusBadRequest)
 		return
+	}
+	if os.Getenv("RELAYCODE_DEBUG_REQUEST") == "1" {
+		log.Printf("incoming raw body (%d bytes): %s", len(rawBody), string(rawBody))
 	}
 	if req.Model == "" {
 		http.Error(w, `{"type":"error","error":{"type":"invalid_request_error","message":"model is required"}}`, http.StatusBadRequest)
