@@ -97,12 +97,26 @@ func (a *Adapter) Stream(ctx context.Context, req *anthropic.Request, upstreamMo
 	finishReason := ""
 	completionTokens := 0
 	thinkParser := streamparse.ThinkTagParser{}
+	toolParser := streamparse.HeuristicToolParser{}
+	emitToolCalls := func(calls []streamparse.ToolCall) {
+		for _, call := range calls {
+			if call.ID == "" || call.Name == "" {
+				continue
+			}
+			raw, _ := json.Marshal(call.Input)
+			b.StartTool(call.ID, call.Name)
+			b.EmitToolInput(call.ID, string(raw))
+			b.StopTool(call.ID)
+		}
+	}
 	emitParsedText := func(text string) {
 		for _, chunk := range thinkParser.Feed(text) {
 			if chunk.Kind == streamparse.ThinkingChunk {
 				b.EmitThinking(chunk.Content)
 			} else {
-				b.EmitText(chunk.Content)
+				safe, calls := toolParser.Feed(chunk.Content)
+				b.EmitText(safe)
+				emitToolCalls(calls)
 			}
 		}
 	}
@@ -161,9 +175,12 @@ func (a *Adapter) Stream(ctx context.Context, req *anthropic.Request, upstreamMo
 		if tail.Kind == streamparse.ThinkingChunk {
 			b.EmitThinking(tail.Content)
 		} else {
-			b.EmitText(tail.Content)
+			safe, calls := toolParser.Feed(tail.Content)
+			b.EmitText(safe)
+			emitToolCalls(calls)
 		}
 	}
+	emitToolCalls(toolParser.Flush())
 	if completionTokens > 0 {
 		b.SetOutputTokens(completionTokens)
 	}
