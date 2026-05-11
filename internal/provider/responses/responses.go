@@ -61,8 +61,18 @@ func (a *Adapter) streamOnce(
 		if err != nil {
 			return err
 		}
-		cacheKey = lookup.InstructionsHash + ":" + lookup.ToolsHash
-		promptCacheOk = cacheKey != ":" // drop empty-instruction + no-tools case
+		// Prefer the conversation's own session id (Claude Code's
+		// metadata.user_id.session_id) so every turn of the same chat
+		// shares one cache_key and upstream reuses its prefix state.
+		// Fall back to the instructions+tools fingerprint when no session
+		// id is available (raw curl clients, tests).
+		if sid := req.SessionID(); sid != "" {
+			cacheKey = sid
+			promptCacheOk = true
+		} else {
+			cacheKey = lookup.InstructionsHash + ":" + lookup.ToolsHash
+			promptCacheOk = cacheKey != ":"
+		}
 	}
 
 	body, err := buildRequest(req, upstreamModel)

@@ -122,6 +122,41 @@ func SystemText(raw json.RawMessage) (string, error) {
 	return out, nil
 }
 
+// SessionID returns a stable conversation identifier extracted from the
+// request metadata. Claude Code sends metadata.user_id as a JSON string
+// containing device_id / account_uuid / session_id; session_id is what
+// stays constant across turns of the same conversation. Returns "" when
+// no usable id is present.
+func (r *Request) SessionID() string {
+	if len(r.Metadata) == 0 {
+		return ""
+	}
+	var md struct {
+		UserID string `json:"user_id"`
+	}
+	if err := json.Unmarshal(r.Metadata, &md); err != nil {
+		return ""
+	}
+	if md.UserID == "" {
+		return ""
+	}
+	var inner struct {
+		SessionID string `json:"session_id"`
+		DeviceID  string `json:"device_id"`
+	}
+	if err := json.Unmarshal([]byte(md.UserID), &inner); err != nil {
+		// user_id is a plain string: use it verbatim.
+		return md.UserID
+	}
+	if inner.SessionID != "" {
+		return inner.SessionID
+	}
+	if inner.DeviceID != "" {
+		return inner.DeviceID
+	}
+	return md.UserID
+}
+
 // ToolResultText flattens a tool_result block's content field into a string.
 func ToolResultText(raw json.RawMessage) (string, error) {
 	if len(raw) == 0 {
