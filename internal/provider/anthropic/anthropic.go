@@ -61,7 +61,7 @@ func (a *Adapter) Stream(ctx context.Context, req *anthropictypes.Request, upstr
 		return nil
 	}
 	defer closer.Close()
-	return pipeRawSSE(reader, b)
+	return pipeRawSSE(reader, b, len(req.Thinking) > 0)
 }
 
 func cloneRequest(req *anthropictypes.Request) map[string]any {
@@ -118,19 +118,41 @@ func (a *Adapter) doStreamWithRetry(ctx context.Context, req *http.Request, body
 	return nil, nil, lastErr
 }
 
-func pipeRawSSE(reader *bufio.Reader, b *sse.Builder) error {
+func pipeRawSSE(reader *bufio.Reader, b *sse.Builder, thinkingEnabled bool) error {
 	defer b.MarkFinished()
 	tracker := newStreamTracker()
+	policy := newNativePolicy()
+	var frame strings.Builder
+	flush := func() error {
+		if strings.TrimSpace(frame.String()) == "" {
+			frame.Reset()
+			return nil
+		}
+		out := policy.Transform(frame.String(), thinkingEnabled)
+		frame.Reset()
+		if out == "" {
+			return nil
+		}
+		tracker.Feed(out)
+		return b.RawWriter().WriteRaw(out)
+	}
 	for {
 		line, err := reader.ReadString('\n')
 		if len(line) > 0 {
-			tracker.Feed(line)
-			if writeErr := b.RawWriter().WriteRaw(line); writeErr != nil {
-				return writeErr
+			trimmed := strings.TrimRight(line, "\r\n")
+			if trimmed == "" {
+				if writeErr := flush(); writeErr != nil {
+					return writeErr
+				}
+			} else {
+				frame.WriteString(line)
 			}
 		}
 		if err != nil {
 			if err == io.EOF {
+				if writeErr := flush(); writeErr != nil {
+					return writeErr
+				}
 				return nil
 			}
 			emitStreamErrorTail(b, tracker, err.Error())
