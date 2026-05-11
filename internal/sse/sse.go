@@ -78,6 +78,7 @@ type Builder struct {
 	inputTokens  int
 	outputTokens int
 
+	started       bool
 	nextIndex     int
 	textIndex     int
 	thinkingIndex int
@@ -112,6 +113,10 @@ func NewBuilder(w *Writer, messageID, model string, inputTokens int) *Builder {
 }
 
 func (b *Builder) Start() {
+	if b.started {
+		return
+	}
+	b.started = true
 	b.w.Event("message_start", map[string]any{
 		"type": "message_start",
 		"message": map[string]any{
@@ -349,20 +354,23 @@ func (b *Builder) Finish() {
 	b.w.Event("message_stop", map[string]any{"type": "message_stop"})
 }
 
-// FinishWithError closes any open blocks and emits a message-level error.
+// FinishWithError closes any open blocks and emits a valid Anthropic SSE error.
 func (b *Builder) FinishWithError(msg string) {
 	if b.finished {
 		return
 	}
-	b.closeText()
-	b.closeThinking()
-	b.closeAllTools()
-	// mid-stream error: emit a top-level error event Anthropic-style.
-	b.w.Event("error", map[string]any{
-		"type":  "error",
-		"error": map[string]any{"type": "api_error", "message": msg},
-	})
-	b.finished = true
+	if !b.started {
+		b.w.Event("error", map[string]any{
+			"type":  "error",
+			"error": map[string]any{"type": "api_error", "message": msg},
+		})
+		b.finished = true
+		return
+	}
+	b.EmitText(msg)
+	b.outputTokens += EstimateOutputTokens(msg)
+	b.stopReason = "end_turn"
+	b.Finish()
 }
 
 func (b *Builder) alloc() int {
