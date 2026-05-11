@@ -2,7 +2,7 @@
 
 <p align="center">
   <strong>Run Claude Code on GPT-5.5. Or DeepSeek. Or anything OpenAI-compatible.</strong><br/>
-  <em>Single-binary proxy. Upstream prompt caching. ~98% token cut on long sessions.</em>
+  <em>Single-binary proxy. Upstream prompt caching. Up to ~98% input token reuse in one observed long-session workload</em>
 </p>
 
 <p align="center">
