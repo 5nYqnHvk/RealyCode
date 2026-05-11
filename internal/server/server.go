@@ -20,13 +20,15 @@ import (
 	"github.com/relaycode/relaycode/internal/provider/chat"
 	"github.com/relaycode/relaycode/internal/provider/responses"
 	"github.com/relaycode/relaycode/internal/router"
+	"github.com/relaycode/relaycode/internal/session"
 	"github.com/relaycode/relaycode/internal/sse"
 )
 
 type Server struct {
 	cfg      *config.Config
 	router   *router.Router
-	adapters map[string]provider.Adapter
+	adapters map[string]provider.Adapter // lazy, keyed by provider name in cfg
+	sessions *session.Store
 	addr     string
 }
 
@@ -40,6 +42,7 @@ func New(cfg *config.Config) (*Server, error) {
 		cfg:      cfg,
 		router:   router.New(cfg),
 		adapters: map[string]provider.Adapter{},
+		sessions: session.NewStore(60*time.Minute, 1000),
 		addr:     net.JoinHostPort(cfg.Server.Host, strconv.Itoa(cfg.Server.Port)),
 	}, nil
 }
@@ -63,6 +66,9 @@ func (s *Server) adapterFor(name string, pc config.ProviderConfig) (provider.Ada
 	if err != nil {
 		return nil, fmt.Errorf("provider %q: %w", name, err)
 	}
+	if aware, ok := a.(provider.SessionAware); ok {
+		aware.SetSession(s.sessions, name)
+	}
 	s.adapters[name] = a
 	return a, nil
 }
@@ -72,6 +78,7 @@ func (s *Server) Addr() string { return s.addr }
 func (s *Server) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/messages", s.handleMessages)
+	mux.HandleFunc("/debug/stats", s.handleStats)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
@@ -99,15 +106,63 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 }
 
+func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.cfg.Server.AuthToken != "" && !authOK(r, s.cfg.Server.AuthToken) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	snapshot := s.sessions.Snapshot()
+	type entryView struct {
+		Provider      string `json:"provider"`
+		UpstreamModel string `json:"upstream_model"`
+		MessageCount  int    `json:"message_count"`
+		ResponseID    string `json:"response_id"`
+		LastUsed      string `json:"last_used"`
+		InputTokens   int    `json:"input_tokens"`
+		OutputTokens  int    `json:"output_tokens"`
+	}
+	entries := make([]entryView, 0, len(snapshot))
+	for _, e := range snapshot {
+		entries = append(entries, entryView{
+			Provider:      e.Provider,
+			UpstreamModel: e.UpstreamModel,
+			MessageCount:  e.MessageCount,
+			ResponseID:    e.ResponseID,
+			LastUsed:      e.LastUsed.UTC().Format(time.RFC3339),
+			InputTokens:   e.InputTokens,
+			OutputTokens:  e.OutputTokens,
+		})
+	}
+	out := map[string]any{
+		"sessions": entries,
+		"counters": map[string]int64{
+			"hits":            s.sessions.Stats.Hits.Load(),
+			"misses":          s.sessions.Stats.Misses.Load(),
+			"forced_replays":  s.sessions.Stats.ForcedReplays.Load(),
+			"expired_invalid": s.sessions.Stats.ExpiredInvalid.Load(),
+			"input_tokens":    s.sessions.Stats.InputTokens.Load(),
+			"output_tokens":   s.sessions.Stats.OutputTokens.Load(),
+		},
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(out)
+}
+
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	if s.cfg.Server.AuthToken != "" && !authOK(r, s.cfg.Server.AuthToken) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
+	if s.cfg.Server.AuthToken != "" {
+		if !authOK(r, s.cfg.Server.AuthToken) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
 	}
 
 	var req anthropic.Request

@@ -5,16 +5,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/relaycode/relaycode/internal/anthropic"
 	"github.com/relaycode/relaycode/internal/config"
 	"github.com/relaycode/relaycode/internal/provider"
+	"github.com/relaycode/relaycode/internal/session"
 	"github.com/relaycode/relaycode/internal/sse"
 )
 
 type Adapter struct {
-	pc config.ProviderConfig
+	pc           config.ProviderConfig
+	store        *session.Store
+	providerName string
 }
 
 func New(pc config.ProviderConfig) (provider.Adapter, error) {
@@ -24,12 +28,49 @@ func New(pc config.ProviderConfig) (provider.Adapter, error) {
 	return &Adapter{pc: pc}, nil
 }
 
+// SetSession wires a session store after construction. Adapters without a
+// store behave statelessly (full replay every request).
+func (a *Adapter) SetSession(store *session.Store, providerName string) {
+	a.store = store
+	a.providerName = providerName
+}
+
 // Stream translates an Anthropic Request to POST /v1/responses and converts
 // the streamed response back into Anthropic SSE events via b.
 func (a *Adapter) Stream(ctx context.Context, req *anthropic.Request, upstreamModel string, b *sse.Builder) error {
+	return a.streamOnce(ctx, req, upstreamModel, b, false)
+}
+
+func (a *Adapter) streamOnce(
+	ctx context.Context,
+	req *anthropic.Request,
+	upstreamModel string,
+	b *sse.Builder,
+	forceFull bool,
+) error {
+	_ = forceFull
+
+	var (
+		lookup        *session.Lookup
+		cacheKey      string
+		promptCacheOk bool
+	)
+	if a.store != nil {
+		var err error
+		lookup, err = a.store.Prepare(a.providerName, upstreamModel, req)
+		if err != nil {
+			return err
+		}
+		cacheKey = lookup.InstructionsHash + ":" + lookup.ToolsHash
+		promptCacheOk = cacheKey != ":" // drop empty-instruction + no-tools case
+	}
+
 	body, err := buildRequest(req, upstreamModel)
 	if err != nil {
 		return err
+	}
+	if promptCacheOk {
+		body["prompt_cache_key"] = cacheKey
 	}
 	raw, _ := json.Marshal(body)
 
@@ -42,6 +83,7 @@ func (a *Adapter) Stream(ctx context.Context, req *anthropic.Request, upstreamMo
 	defer closer.Close()
 	b.Start()
 
+	// item kind tracking
 	type itemState struct {
 		kind   string
 		callID string
@@ -49,10 +91,14 @@ func (a *Adapter) Stream(ctx context.Context, req *anthropic.Request, upstreamMo
 	}
 	items := map[string]*itemState{}
 
+	stripper := tagStripper{}
 	stopReason := "end_turn"
 	outputTokens := 0
+	inputTokens := 0
+	cachedTokens := 0
+	newResponseID := ""
+	sawUpstreamError := false
 	upstreamErrMsg := ""
-	stripper := tagStripper{}
 
 	err = provider.IterSSE(reader, func(ev provider.SSEEvent) error {
 		if ev.Data == "" {
@@ -133,8 +179,13 @@ func (a *Adapter) Stream(ctx context.Context, req *anthropic.Request, upstreamMo
 		case "response.completed":
 			var wrap struct {
 				Response struct {
+					ID    string `json:"id"`
 					Usage struct {
-						OutputTokens int `json:"output_tokens"`
+						InputTokens        int `json:"input_tokens"`
+						OutputTokens       int `json:"output_tokens"`
+						InputTokensDetails struct {
+							CachedTokens int `json:"cached_tokens"`
+						} `json:"input_tokens_details"`
 					} `json:"usage"`
 					Output []struct {
 						Type string `json:"type"`
@@ -142,7 +193,10 @@ func (a *Adapter) Stream(ctx context.Context, req *anthropic.Request, upstreamMo
 				} `json:"response"`
 			}
 			if err := json.Unmarshal([]byte(ev.Data), &wrap); err == nil {
+				newResponseID = wrap.Response.ID
 				outputTokens = wrap.Response.Usage.OutputTokens
+				inputTokens = wrap.Response.Usage.InputTokens
+				cachedTokens = wrap.Response.Usage.InputTokensDetails.CachedTokens
 				for _, o := range wrap.Response.Output {
 					if o.Type == "function_call" {
 						stopReason = "tool_use"
@@ -155,6 +209,7 @@ func (a *Adapter) Stream(ctx context.Context, req *anthropic.Request, upstreamMo
 			stopReason = "max_tokens"
 
 		case "response.failed", "response.error":
+			sawUpstreamError = true
 			var wrap struct {
 				Response struct {
 					Error struct {
@@ -196,11 +251,27 @@ func (a *Adapter) Stream(ctx context.Context, req *anthropic.Request, upstreamMo
 	}
 	b.SetStopReason(stopReason)
 	b.Finish()
+
+	if !sawUpstreamError && a.store != nil && lookup != nil && newResponseID != "" {
+		a.store.Commit(lookup, a.providerName, upstreamModel, len(req.Messages), newResponseID, inputTokens, outputTokens)
+		a.store.Stats.InputTokens.Add(int64(inputTokens))
+		a.store.Stats.OutputTokens.Add(int64(outputTokens))
+		if cachedTokens > 0 {
+			a.store.Stats.Hits.Add(1)
+			log.Printf("responses: cache_hit provider=%s model=%s cached_tokens=%d input_tokens=%d output_tokens=%d resp=%s",
+				a.providerName, upstreamModel, cachedTokens, inputTokens, outputTokens, newResponseID)
+		} else {
+			a.store.Stats.Misses.Add(1)
+			log.Printf("responses: cache_miss provider=%s model=%s input_tokens=%d output_tokens=%d resp=%s",
+				a.providerName, upstreamModel, inputTokens, outputTokens, newResponseID)
+		}
+	}
 	return nil
 }
 
 // ---- Request translation ----
 
+// Responses API input items (subset we emit).
 type inputItem struct {
 	Type    string             `json:"type"`
 	Role    string             `json:"role,omitempty"`
@@ -242,9 +313,6 @@ func buildRequest(r *anthropic.Request, model string) (map[string]any, error) {
 	return body, nil
 }
 
-// applyCommonFields mirrors openai/codex CLI's Responses API request shape:
-// tool_choice and parallel_tool_calls are always present; store defaults
-// to false (matching openai.com's Codex client behavior).
 func applyCommonFields(body map[string]any, r *anthropic.Request) {
 	if r.MaxTokens > 0 {
 		body["max_output_tokens"] = r.MaxTokens
@@ -255,6 +323,8 @@ func applyCommonFields(body map[string]any, r *anthropic.Request) {
 	if r.TopP != nil {
 		body["top_p"] = *r.TopP
 	}
+	// Match openai/codex HTTP request shape: tool_choice and parallel_tool_calls
+	// are always present; store defaults to false on openai.com.
 	body["tool_choice"] = "auto"
 	body["parallel_tool_calls"] = true
 	if _, set := body["store"]; !set {
