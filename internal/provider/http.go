@@ -68,6 +68,12 @@ func PostStreamWithClient(ctx context.Context, client *http.Client, maxRetries i
 			resp.Body.Close()
 			return nil, nil, fmt.Errorf("upstream %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet)))
 		} else {
+			contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+			if contentType != "" && !strings.Contains(contentType, "text/event-stream") {
+				snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+				resp.Body.Close()
+				return nil, nil, fmt.Errorf("upstream %d non-SSE response (%s): %s", resp.StatusCode, strings.TrimSpace(contentType), strings.TrimSpace(string(snippet)))
+			}
 			return bufio.NewReaderSize(resp.Body, 1<<15), resp.Body, nil
 		}
 		if attempt+1 < attempts {
