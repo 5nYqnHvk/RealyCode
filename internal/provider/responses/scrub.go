@@ -2,9 +2,9 @@ package responses
 
 import "strings"
 
-// scaffoldingTokens are suppressed entirely from streamed text. They originate
-// from MaxPlus (and similar OpenAI-Responses-compat gateways) leaking internal
-// tool-call scaffolding into text deltas alongside the real function_call item.
+// scaffoldingTokens are suppressed entirely from streamed text. Some
+// OpenAI-compatible gateways leak their internal tool-call scaffolding
+// into text deltas alongside the real function_call output item.
 //
 // Only exact matches on this list are stripped; genuine angle-bracket text
 // (JSX, C++ templates, comparisons) passes through untouched.

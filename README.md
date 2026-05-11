@@ -22,10 +22,10 @@ each request into either the OpenAI **Chat Completions** or **Responses**
 protocol on the server side, streaming the reply back as a faithful Anthropic
 SSE event sequence.
 
-The result: you keep the Claude Code UX and point it at GPT-5.x (via
-MaxPlus, real OpenAI, or any OpenAI-compatible gateway) or at DeepSeek /
-Kimi-style chat endpoints, with upstream prompt caching chained correctly so
-follow-up turns cost a fraction of a full replay.
+The result: you keep the Claude Code UX and point it at GPT-5.x on the OpenAI
+Responses API, or at DeepSeek / Kimi-style chat endpoints, with upstream
+prompt caching chained correctly so follow-up turns cost a fraction of a
+full replay.
 
 ## Highlights
 
@@ -73,9 +73,9 @@ backend the router picked.
 
 ```
 ┌──────────────┐   Anthropic        ┌────────────────┐   OpenAI         ┌──────────────┐
-│ Claude Code  │ ─── /v1/messages ─▶│   RelayCode    │──/v1/responses──▶│  MaxPlus /   │
-│   (client)   │ ◀─── SSE stream ───│                │  /chat/...       │  OpenAI /    │
-└──────────────┘                    └────────────────┘                  │  DeepSeek    │
+│ Claude Code  │ ─── /v1/messages ─▶│   RelayCode    │──/v1/responses──▶│  OpenAI /    │
+│   (client)   │ ◀─── SSE stream ───│                │  /chat/...       │  DeepSeek /  │
+└──────────────┘                    └────────────────┘                  │  Kimi / ...  │
                                                                         └──────────────┘
 ```
 
@@ -158,7 +158,7 @@ routes:
     provider: openai_responses
     model: gpt-5.5
   - match: "sonnet"
-    provider: maxplus_responses
+    provider: openai_responses
     model: gpt-5.4
   - match: "*"                 # fallback: required
     provider: deepseek_chat
@@ -169,11 +169,6 @@ providers:
     kind: openai_responses     # POST /v1/responses
     base_url: https://api.openai.com/v1
     api_key: "${OPENAI_API_KEY}"
-
-  maxplus_responses:
-    kind: openai_responses
-    base_url: https://api.maxplus-ai.cc/v1
-    api_key: "${MAXPLUS_API_KEY}"
 
   openai_chat:
     kind: openai_chat          # POST /v1/chat/completions
@@ -194,8 +189,8 @@ providers:
 - `providers[].kind` must be `openai_chat` or `openai_responses`.
 - Unknown provider kinds are rejected at startup.
 - Missing API keys are reported lazily on the first request that routes to
-  that provider (so a proxy with only MaxPlus configured doesn't fail to
-  boot just because `OPENAI_API_KEY` is unset).
+  that provider (so a proxy with only one upstream configured doesn't fail
+  to boot just because an unused key is unset).
 
 ## Routing
 
@@ -228,8 +223,8 @@ caching lights up correctly:
   `cch=<hash>` field would otherwise change the prefix byte-for-byte every
   turn and blow the cache.
 
-Measured against MaxPlus on a real Claude Code session (`claude-opus-4-7`,
-single conversation, four user turns in a row):
+Measured against an OpenAI Responses backend on a real Claude Code session
+(`claude-opus-4-7`, single conversation, four user turns in a row):
 
 | Turn | `cached_tokens` | `input_tokens` | notes                         |
 |------|-----------------|----------------|-------------------------------|
@@ -259,7 +254,7 @@ curl -sS http://127.0.0.1:8080/debug/stats \
   },
   "sessions": [
     {
-      "provider": "maxplus_responses",
+      "provider": "openai_responses",
       "upstream_model": "gpt-5.5",
       "message_count": 5,
       "response_id": "resp_...",
