@@ -1,16 +1,28 @@
 # RelayCode
 
 <p align="center">
-  <strong>Single-binary Anthropic-compatible proxy for Claude Code.</strong>
+  <strong>Run Claude Code on GPT-5.5. Or DeepSeek. Or anything OpenAI-compatible.</strong><br/>
+  <em>Single-binary proxy. Upstream prompt caching. ~98% token cut on long sessions.</em>
+</p>
+
+<p align="center">
+  <a href="https://github.com/5nYqnHvk/RelayCode/releases"><img alt="Release" src="https://img.shields.io/github/v/release/5nYqnHvk/RelayCode?style=flat-square"></a>
+  <a href="https://github.com/5nYqnHvk/RelayCode/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/5nYqnHvk/RelayCode/ci.yml?branch=main&style=flat-square"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/5nYqnHvk/RelayCode?style=flat-square"></a>
+  <img alt="Go" src="https://img.shields.io/badge/go-1.26-00ADD8?style=flat-square">
+  <img alt="Platforms" src="https://img.shields.io/badge/platforms-linux%20%7C%20macOS%20%7C%20windows-555?style=flat-square">
 </p>
 
 <p align="center">
   <a href="#why-this-exists">Why this exists</a> ·
+  <a href="#install">Install</a> ·
   <a href="#quickstart">Quickstart</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#configuration">Configuration</a> ·
   <a href="#providers">Providers</a> ·
-  <a href="#development">Development</a>
+  <a href="#security">Security</a> ·
+  <a href="#faq">FAQ</a> ·
+  <a href="#troubleshooting">Troubleshooting</a>
 </p>
 
 ---
@@ -68,7 +80,12 @@ Those numbers are workload/provider dependent, but the pattern is the point:
 once the stable prefix lands in upstream cache, later Claude Code turns stop
 paying full-history cost every request.
 
+<details>
+<summary><b>Screenshot — token/cost per request (click to expand)</b></summary>
+
 ![Token and cost usage per request, captured during the build run](Img/Token.png)
+
+</details>
 
 ## Highlights
 
@@ -84,6 +101,32 @@ paying full-history cost every request.
 - **Local web server tools.** Optional local handling for forced Anthropic
   `web_search` / `web_fetch` requests.
 - **Debug stats.** `/debug/stats` exposes in-memory session cache counters.
+
+## Install
+
+### Prebuilt binary (recommended)
+
+Grab the latest release from
+[GitHub Releases](https://github.com/5nYqnHvk/RelayCode/releases). Archives
+ship the `relaycode` binary, `relaycode.example.yaml`, `README.md`, and
+`LICENSE`. Per-archive `sha256` files are published alongside the assets.
+
+Linux / macOS:
+
+```bash
+curl -L -o relaycode.tar.gz \
+  "https://github.com/5nYqnHvk/RelayCode/releases/latest/download/relaycode-<VERSION>-<OS>-<ARCH>.tar.gz"
+tar -xzf relaycode.tar.gz
+./relaycode -config relaycode.yaml
+```
+
+Windows: download the matching `*.zip`, unzip, then run `relaycode.exe`.
+
+### Build from source
+
+```bash
+go build -o relaycode ./cmd/relaycode
+```
 
 ## Quickstart
 
@@ -350,6 +393,62 @@ Debug logging:
 - Local web tools run only for forced Anthropic web server tool requests.
 - Retry only applies to transport errors, HTTP 429, and HTTP 5xx before a stream
   is accepted; mid-stream provider failures are returned as Anthropic SSE errors.
+
+## Security
+
+- **Bind to localhost by default.** `server.host: 127.0.0.1` in
+  `relaycode.example.yaml`. Bind to a public interface only when needed.
+- **Set `server.auth_token`** before exposing RelayCode beyond localhost.
+  Without it, any local process can reach the proxy.
+- **No TLS termination.** RelayCode serves plain HTTP. Terminate TLS at a
+  reverse proxy (Caddy, nginx, Cloudflare Tunnel) when not on localhost.
+- **No prompt logging by default.** `RELAYCODE_DEBUG_REQUEST=1` prints raw
+  request bodies; use only locally for debugging. `log_request_snapshots`
+  prints shape-only snapshots without raw prompt text.
+- **Provider keys via env.** Prefer `${OPENAI_API_KEY}` / `${DEEPSEEK_API_KEY}`
+  over pasting keys into `relaycode.yaml`.
+- **Session store is in memory.** No cache persistence = no prompt prefix at
+  rest. Cache counters reset on restart.
+
+## FAQ
+
+**Why route through Responses instead of Chat Completions?**
+Responses accepts `prompt_cache_key`, so multi-turn Claude Code sessions reuse
+the shared prefix upstream. Chat Completions works but has no session-level
+cache handle.
+
+**Can I keep using Anthropic directly?**
+Yes. Configure an `anthropic_messages` provider and route whichever model
+substring you want through it. RelayCode just forwards the request.
+
+**How do I mix providers?**
+Put multiple entries in `routes[]`. First match (case-insensitive substring on
+incoming model) wins. Example: `opus` → OpenAI Responses, `haiku` → DeepSeek
+chat, `*` → fallback.
+
+**Does it support image / vision?**
+Only through the native Anthropic route. OpenAI-compatible adapters reject
+user image blocks.
+
+**Will Claude Code know it's being proxied?**
+No. RelayCode speaks the Anthropic Messages API; Claude Code treats it as a
+normal Anthropic endpoint.
+
+## Troubleshooting
+
+- **`cache_miss` every turn.** Client is not sending
+  `metadata.user_id.session_id`. Either upgrade the Claude Code client, or
+  expect prefix reuse to fall back to instructions+tools fingerprint only.
+- **`401`/`403` from upstream.** API key is missing or wrong. Check the env
+  var referenced in `relaycode.yaml`.
+- **`429` from upstream.** Set `providers.<name>.max_retries` and
+  `max_concurrency` to smooth spikes.
+- **Long requests time out.** Bump `providers.<name>.http_timeout_seconds`.
+- **"image user blocks not supported".** Route vision turns through an
+  `anthropic_messages` provider instead of OpenAI adapters.
+- **Forced `web_search` / `web_fetch` returns 400.** Enable
+  `server.enable_web_server_tools: true`. Default is off because the proxy
+  makes outbound HTTP.
 
 ## Development
 
