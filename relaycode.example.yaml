@@ -1,0 +1,40 @@
+# RelayCode proxy config
+server:
+  host: 127.0.0.1
+  port: 8080
+  auth_token: ""   # when non-empty, clients must send matching x-api-key / Authorization
+
+# Incoming Claude model name -> backend route.
+# "match" is checked as a suffix-or-equal on the incoming model name (e.g. "opus", "sonnet", "haiku").
+# "default" entry with match: "*" is required.
+routes:
+  - match: "opus"
+    provider: openai_responses
+    model: gpt-5.4-mini
+  - match: "sonnet"
+    provider: maxplus_responses
+    model: gpt-5.4-mini
+  - match: "*"
+    provider: deepseek_chat
+    model: deepseek-chat
+
+providers:
+  openai_responses:
+    kind: openai_responses                 # uses POST /v1/responses
+    base_url: https://api.openai.com/v1
+    api_key: "${OPENAI_API_KEY}"
+
+  maxplus_responses:
+    kind: openai_responses
+    base_url: https://api.maxplus-ai.cc/v1
+    api_key: "${MAXPLUS_API_KEY}"
+
+  openai_chat:
+    kind: openai_chat                      # uses POST /v1/chat/completions
+    base_url: https://api.openai.com/v1
+    api_key: "${OPENAI_API_KEY}"
+
+  deepseek_chat:
+    kind: openai_chat
+    base_url: https://api.deepseek.com/v1
+    api_key: "${DEEPSEEK_API_KEY}"
