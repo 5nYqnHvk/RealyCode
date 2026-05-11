@@ -24,6 +24,9 @@ providers:
     kind: openai_responses                 # POST /v1/responses
     base_url: https://api.openai.com/v1
     api_key: "${OPENAI_API_KEY}"
+    # Experimental/unsupported: maps Anthropic server tools (web_search, etc.)
+    # to upstream function tools. May pollute context or break replay.
+    # experimental_passthrough_server_tools: true
 
   openai_chat:
     kind: openai_chat                      # POST /v1/chat/completions

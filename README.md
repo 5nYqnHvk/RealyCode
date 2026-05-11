@@ -169,6 +169,9 @@ providers:
     kind: openai_responses     # POST /v1/responses
     base_url: https://api.openai.com/v1
     api_key: "${OPENAI_API_KEY}"
+    # Experimental/unsupported: maps Anthropic server tools (web_search, etc.)
+    # to upstream function tools. May pollute context or break replay.
+    # experimental_passthrough_server_tools: true
 
   openai_chat:
     kind: openai_chat          # POST /v1/chat/completions
@@ -191,6 +194,11 @@ providers:
 - Missing API keys are reported lazily on the first request that routes to
   that provider (so a proxy with only one upstream configured doesn't fail
   to boot just because an unused key is unset).
+- `providers.<name>.experimental_passthrough_server_tools: true` maps
+  Anthropic server tools (for example `web_search`) into upstream function
+  tools instead of stripping them. This is experimental and unsupported:
+  RelayCode only exposes the path, and does not guarantee clean context,
+  correct replay, or provider-compatible server-tool behavior.
 
 ## Routing
 
