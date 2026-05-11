@@ -48,8 +48,8 @@ full replay.
 ## Quickstart
 
 ```bash
-git clone https://github.com/5nYqnHvk/RealyCode.git
-cd RealyCode
+git clone https://github.com/5nYqnHvk/RelayCode.git
+cd RelayCode
 go build -o relaycode ./cmd/relaycode
 
 cp relaycode.example.yaml relaycode.yaml
