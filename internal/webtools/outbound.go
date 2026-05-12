@@ -61,7 +61,8 @@ func RunWebFetch(ctx context.Context, rawURL string, policy EgressPolicy) (Fetch
 		if err != nil {
 			return FetchResult{}, err
 		}
-		if err := policy.ValidateHost(parsed.Hostname()); err != nil {
+		ips, err := policy.resolveHost(ctx, parsed.Hostname())
+		if err != nil {
 			return FetchResult{}, err
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
@@ -69,17 +70,22 @@ func RunWebFetch(ctx context.Context, rawURL string, policy EgressPolicy) (Fetch
 			return FetchResult{}, err
 		}
 		setWebToolHeaders(req)
-		client := *httpClient
+		client := newValidatedClient(httpClient, parsed.Hostname(), ips)
 		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		}
 		resp, err := client.Do(req)
 		if err != nil {
+			client.CloseIdleConnections()
 			return FetchResult{}, err
+		}
+		closeResp := func() {
+			resp.Body.Close()
+			client.CloseIdleConnections()
 		}
 		if isRedirect(resp.StatusCode) {
 			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, redirectBodyCapBytes))
-			resp.Body.Close()
+			closeResp()
 			if redirects >= maxRedirects {
 				return FetchResult{}, EgressViolation{Message: "web_fetch exceeded maximum redirects"}
 			}
@@ -94,19 +100,20 @@ func RunWebFetch(ctx context.Context, rawURL string, policy EgressPolicy) (Fetch
 			current = next.String()
 			continue
 		}
-		defer resp.Body.Close()
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			closeResp()
 			return FetchResult{}, fmt.Errorf("web_fetch upstream %d", resp.StatusCode)
 		}
 		body, err := readBodyCapped(resp.Body, maxResponseBytes)
+		contentType := resp.Header.Get("Content-Type")
+		finalURL := resp.Request.URL.String()
+		closeResp()
 		if err != nil {
 			return FetchResult{}, err
 		}
-		contentType := resp.Header.Get("Content-Type")
 		if contentType == "" {
 			contentType = "text/plain"
 		}
-		finalURL := resp.Request.URL.String()
 		data := string(body)
 		title := finalURL
 		if strings.Contains(strings.ToLower(contentType), "html") {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"strings"
 )
@@ -47,22 +48,53 @@ func (p EgressPolicy) ValidateURL(raw string) (*url.URL, error) {
 }
 
 func (p EgressPolicy) ValidateHost(host string) error {
+	_, err := p.resolveHost(context.Background(), host)
+	return err
+}
+
+func (p EgressPolicy) resolveHost(ctx context.Context, host string) ([]net.IPAddr, error) {
 	if host == "" {
-		return EgressViolation{Message: "web_fetch host is empty"}
+		return nil, EgressViolation{Message: "web_fetch host is empty"}
 	}
-	ips, err := net.DefaultResolver.LookupIPAddr(context.Background(), host)
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if len(ips) == 0 {
-		return EgressViolation{Message: "web_fetch host did not resolve"}
+		return nil, EgressViolation{Message: "web_fetch host did not resolve"}
 	}
 	for _, addr := range ips {
 		if err := p.ValidateIP(addr.IP); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	return ips, nil
+}
+
+func newValidatedClient(base *http.Client, host string, ips []net.IPAddr) *http.Client {
+	client := *base
+	transport, ok := base.Transport.(*http.Transport)
+	if !ok || transport == nil {
+		transport = http.DefaultTransport.(*http.Transport)
+	}
+	clone := transport.Clone()
+	clone.Proxy = nil
+	dialer := &net.Dialer{}
+	clone.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		_, port, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, err
+		}
+		for _, addr := range ips {
+			conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(addr.IP.String(), port))
+			if err == nil {
+				return conn, nil
+			}
+		}
+		return nil, fmt.Errorf("web_fetch validated addresses for %s are unreachable", host)
+	}
+	client.Transport = clone
+	return &client
 }
 
 func (p EgressPolicy) ValidateIP(ip net.IP) error {
