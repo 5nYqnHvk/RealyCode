@@ -187,6 +187,11 @@ func (a *Adapter) streamOnce(
 		args = normalizeToolArgsForAnthropic(st.kind, args)
 		restored, ok := registry.Validate(st.name, args)
 		if !ok {
+			if os.Getenv("RELAYCODE_DEBUG_UPSTREAM") == "1" {
+				log.Printf("responses: DROPPED tool_call name=%s call_id=%s args=%s (schema validation failed)", st.name, st.callID, args)
+			} else {
+				log.Printf("responses: DROPPED tool_call name=%s call_id=%s (schema validation failed)", st.name, st.callID)
+			}
 			return
 		}
 		b.StartTool(st.callID, st.name)
@@ -222,6 +227,13 @@ func (a *Adapter) streamOnce(
 	err = provider.IterSSE(reader, func(ev provider.SSEEvent) error {
 		if ev.Data == "" {
 			return nil
+		}
+		if os.Getenv("RELAYCODE_DEBUG_UPSTREAM") == "1" {
+			preview := ev.Data
+			if len(preview) > 500 {
+				preview = preview[:500] + "…"
+			}
+			log.Printf("responses upstream ev: %s", preview)
 		}
 		var header struct {
 			Type   string `json:"type"`
