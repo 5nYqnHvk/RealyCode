@@ -9,9 +9,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/5nYqnHvk/RelayCode/internal/anthropic"
 	"github.com/5nYqnHvk/RelayCode/internal/config"
+	"github.com/5nYqnHvk/RelayCode/internal/session"
 	"github.com/5nYqnHvk/RelayCode/internal/sse"
 )
 
@@ -68,6 +70,22 @@ func TestBuildRequestMapsOutputConfigEffort(t *testing.T) {
 	reasoning := body["reasoning"].(map[string]any)
 	if reasoning["effort"] != "xhigh" {
 		t.Fatalf("reasoning.effort = %v", reasoning["effort"])
+	}
+}
+
+func TestBuildRequestMapsOutputFormatToTextFormat(t *testing.T) {
+	req := &anthropic.Request{OutputConfig: &anthropic.OutputConfig{ExtraFields: map[string]json.RawMessage{
+		"format": json.RawMessage(`{"type":"json_schema","schema":{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}}`),
+	}}}
+
+	body, err := buildRequest(req, "gpt", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := body["text"].(map[string]any)
+	format := text["format"].(map[string]any)
+	if format["type"] != "json_schema" || format["name"] != "relaycode_output_schema" || format["strict"] != true {
+		t.Fatalf("text format = %+v", format)
 	}
 }
 
@@ -402,6 +420,95 @@ func TestStreamEmitsFunctionCallArgumentsDonePayload(t *testing.T) {
 	}
 	out := rw.body.String()
 	for _, want := range []string{`"type":"tool_use"`, `"name":"Read"`, `"partial_json":"{\"file_path\":\"/tmp/x\"}"`, `"stop_reason":"tool_use"`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %s:\n%s", want, out)
+		}
+	}
+}
+
+func TestStreamChainsPreviousResponseIDWithTailInput(t *testing.T) {
+	var bodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		bodies = append(bodies, body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		id := "resp_1"
+		if len(bodies) == 2 {
+			id = "resp_2"
+		}
+		_, _ = w.Write([]byte(`event: response.completed
+` + `data: {"type":"response.completed","response":{"id":"` + id + `","usage":{"input_tokens":1,"output_tokens":1,"input_tokens_details":{"cached_tokens":0}}}}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	adapter := &Adapter{pc: config.ProviderConfig{BaseURL: server.URL, APIKey: "key"}, client: server.Client()}
+	adapter.SetSession(session.NewStore(time.Hour, 10), "openai")
+	first := &anthropic.Request{Messages: []anthropic.Message{{Role: "user", Content: anthropic.Content{Raw: "first"}}}}
+	second := &anthropic.Request{Messages: []anthropic.Message{
+		{Role: "user", Content: anthropic.Content{Raw: "first"}},
+		{Role: "assistant", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "text", Text: "reply"}}}},
+		{Role: "user", Content: anthropic.Content{Raw: "second"}},
+	}}
+
+	for _, req := range []*anthropic.Request{first, second} {
+		rw := &recordResponseWriter{}
+		builder := sse.NewBuilder(sse.NewWriter(rw), "msg", "model", 1)
+		if err := adapter.Stream(context.Background(), req, "gpt", builder); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("bodies len = %d", len(bodies))
+	}
+	if _, ok := bodies[0]["previous_response_id"]; ok {
+		t.Fatalf("first request unexpectedly chained: %+v", bodies[0])
+	}
+	if bodies[1]["previous_response_id"] != "resp_1" {
+		t.Fatalf("second previous_response_id = %+v", bodies[1])
+	}
+	input := bodies[1]["input"].([]any)
+	if len(input) != 1 {
+		t.Fatalf("tail input = %+v", input)
+	}
+	item := input[0].(map[string]any)
+	content := item["content"].([]any)
+	part := content[0].(map[string]any)
+	if item["role"] != "user" || part["text"] != "second" || bodies[1]["store"] != true {
+		t.Fatalf("tail request body = %+v", bodies[1])
+	}
+}
+
+func TestStreamEmitsCustomToolCallInputDelta(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`event: response.output_item.added
+` + `data: {"type":"response.output_item.added","item":{"id":"ctc_1","type":"custom_tool_call","call_id":"call_1","name":"apply_patch"}}` + "\n\n"))
+		_, _ = w.Write([]byte(`event: response.custom_tool_call_input.delta
+` + `data: {"type":"response.custom_tool_call_input.delta","item_id":"ctc_1","call_id":"call_1","delta":"*** Begin"}` + "\n\n"))
+		_, _ = w.Write([]byte(`event: response.output_item.done
+` + `data: {"type":"response.output_item.done","item":{"id":"ctc_1","type":"custom_tool_call","call_id":"call_1","name":"apply_patch"}}` + "\n\n"))
+		_, _ = w.Write([]byte(`event: response.completed
+` + `data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":1,"output_tokens":1,"input_tokens_details":{"cached_tokens":0}}}}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	adapter := &Adapter{pc: config.ProviderConfig{BaseURL: server.URL, APIKey: "key"}, client: server.Client()}
+	req := &anthropic.Request{
+		Messages: []anthropic.Message{{Role: "user", Content: anthropic.Content{Raw: "patch"}}},
+		Tools:    []anthropic.Tool{{Name: "apply_patch", Type: "custom"}},
+	}
+	rw := &recordResponseWriter{}
+	builder := sse.NewBuilder(sse.NewWriter(rw), "msg", "model", 1)
+	if err := adapter.Stream(context.Background(), req, "gpt", builder); err != nil {
+		t.Fatal(err)
+	}
+	out := rw.body.String()
+	for _, want := range []string{`"type":"tool_use"`, `"name":"apply_patch"`, `"partial_json":"{\"input\":\"*** Begin\"}"`, `"stop_reason":"tool_use"`} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output missing %s:\n%s", want, out)
 		}

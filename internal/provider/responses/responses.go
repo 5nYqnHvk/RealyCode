@@ -71,8 +71,6 @@ func (a *Adapter) streamOnce(
 	b *sse.Builder,
 	forceFull bool,
 ) error {
-	_ = forceFull
-
 	var (
 		lookup        *session.Lookup
 		cacheKey      string
@@ -104,9 +102,24 @@ func (a *Adapter) streamOnce(
 		}
 	}
 
-	body, aliases, err := buildRequestWithAliases(req, upstreamModel, a.pc.ExperimentalPassthroughServerTools)
+	bodyReq := req
+	chained := false
+	if !forceFull && lookup != nil && lookup.Chain != nil && lookup.Chain.ResponseID != "" {
+		tailReq := *req
+		tailReq.Messages = lookup.Tail
+		bodyReq = &tailReq
+		chained = true
+	}
+
+	body, aliases, err := buildRequestWithAliases(bodyReq, upstreamModel, a.pc.ExperimentalPassthroughServerTools)
 	if err != nil {
 		return err
+	}
+	if chained {
+		body["previous_response_id"] = lookup.Chain.ResponseID
+	}
+	if a.store != nil {
+		body["store"] = true
 	}
 	if promptCacheOk {
 		body["prompt_cache_key"] = cacheKey
@@ -121,6 +134,13 @@ func (a *Adapter) streamOnce(
 	}
 	reader, closer, err := provider.PostStreamWithClient(ctx, a.client, a.pc.MaxRetries, a.pc.BaseURL, "/responses", a.pc.APIKey, "Authorization", extraHeaders, raw)
 	if err != nil {
+		if chained && isInvalidPreviousResponseError(err) && a.store != nil && lookup != nil && lookup.Chain != nil {
+			a.store.Invalidate(lookup.Chain.Key)
+			a.store.Stats.ExpiredInvalid.Add(1)
+			a.store.Stats.ForcedReplays.Add(1)
+			log.Printf("responses: previous_response_id invalid provider=%s model=%s resp=%s; retrying full replay", a.providerName, upstreamModel, lookup.Chain.ResponseID)
+			return a.streamOnce(ctx, req, upstreamModel, b, true)
+		}
 		b.Start()
 		b.FinishWithError(err.Error())
 		return nil
@@ -151,13 +171,14 @@ func (a *Adapter) streamOnce(
 			}
 		}
 	}
-	emitFunctionCall := func(st *itemState, args string) {
-		if st == nil || st.toolClosed || st.kind != "function_call" || st.callID == "" || st.name == "" {
+	emitToolCall := func(st *itemState, args string) {
+		if st == nil || st.toolClosed || !isCallableItem(st.kind) || st.callID == "" || st.name == "" {
 			return
 		}
 		if args == "" {
 			args = st.args
 		}
+		args = normalizeToolArgsForAnthropic(st.kind, args)
 		restored, ok := registry.Validate(st.name, args)
 		if !ok {
 			return
@@ -167,6 +188,22 @@ func (a *Adapter) streamOnce(
 		b.StopTool(st.callID)
 		st.toolClosed = true
 		emittedToolCall = true
+	}
+	findItem := func(itemID, callID string) *itemState {
+		if itemID != "" {
+			if st := items[itemID]; st != nil {
+				return st
+			}
+		}
+		if callID == "" {
+			return nil
+		}
+		for _, st := range items {
+			if st != nil && st.callID == callID {
+				return st
+			}
+		}
+		return nil
 	}
 	stopReason := "end_turn"
 	outputTokens := 0
@@ -184,6 +221,7 @@ func (a *Adapter) streamOnce(
 			Type   string `json:"type"`
 			Delta  string `json:"delta,omitempty"`
 			ItemID string `json:"item_id,omitempty"`
+			CallID string `json:"call_id,omitempty"`
 		}
 		if err := json.Unmarshal([]byte(ev.Data), &header); err != nil {
 			return nil
@@ -215,13 +253,26 @@ func (a *Adapter) streamOnce(
 		case "response.output_text.done":
 			stripper.Reset()
 
+		case "response.reasoning_summary_part.added":
+			b.EnsureThinking()
+
 		case "response.reasoning_summary_text.delta", "response.reasoning.delta", "response.reasoning_text.delta":
 			if header.Delta != "" {
 				b.EmitThinking(header.Delta)
 			}
 
+		case "response.custom_tool_call_input.delta":
+			st := findItem(header.ItemID, header.CallID)
+			if st == nil || st.callID == "" {
+				return nil
+			}
+			if st.kind == "" {
+				st.kind = "custom_tool_call"
+			}
+			st.args += header.Delta
+
 		case "response.function_call_arguments.delta":
-			st := items[header.ItemID]
+			st := findItem(header.ItemID, header.CallID)
 			if st == nil || st.callID == "" {
 				return nil
 			}
@@ -234,7 +285,7 @@ func (a *Adapter) streamOnce(
 			if err := json.Unmarshal([]byte(ev.Data), &wrap); err != nil {
 				return nil
 			}
-			st := items[header.ItemID]
+			st := findItem(header.ItemID, header.CallID)
 			if st == nil || st.callID == "" {
 				return nil
 			}
@@ -244,7 +295,7 @@ func (a *Adapter) streamOnce(
 			if st.args == "" {
 				st.args = "{}"
 			}
-			emitFunctionCall(st, st.args)
+			emitToolCall(st, st.args)
 
 		case "response.output_item.done":
 			if handled, err := emitWebSearchCall(ev.Data, b); err != nil {
@@ -259,6 +310,7 @@ func (a *Adapter) streamOnce(
 					CallID    string `json:"call_id,omitempty"`
 					Name      string `json:"name,omitempty"`
 					Arguments string `json:"arguments,omitempty"`
+					Input     string `json:"input,omitempty"`
 				} `json:"item"`
 			}
 			if err := json.Unmarshal([]byte(ev.Data), &wrap); err != nil {
@@ -278,11 +330,14 @@ func (a *Adapter) streamOnce(
 			if st.name == "" {
 				st.name = wrap.Item.Name
 			}
-			if st.kind == "function_call" && st.callID != "" && st.name != "" {
+			if isCallableItem(st.kind) && st.callID != "" && st.name != "" {
 				if wrap.Item.Arguments != "" {
 					st.args = wrap.Item.Arguments
 				}
-				emitFunctionCall(st, st.args)
+				if wrap.Item.Input != "" {
+					st.args = wrap.Item.Input
+				}
+				emitToolCall(st, st.args)
 			}
 
 		case "response.completed":
@@ -406,6 +461,42 @@ func codexAuthHeaders(path string) (map[string]string, error) {
 	return headers, nil
 }
 
+func isInvalidPreviousResponseError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "previous_response_id") ||
+		strings.Contains(msg, "previous response") ||
+		strings.Contains(msg, "not found") ||
+		strings.Contains(msg, "expired")
+}
+
+func isCallableItem(kind string) bool {
+	return kind == "function_call" || kind == "custom_tool_call"
+}
+
+func normalizeToolArgsForAnthropic(kind, args string) string {
+	if kind != "custom_tool_call" {
+		if args == "" {
+			return "{}"
+		}
+		return args
+	}
+	trimmed := strings.TrimSpace(args)
+	if trimmed != "" && strings.HasPrefix(trimmed, "{") {
+		var value map[string]any
+		if json.Unmarshal([]byte(trimmed), &value) == nil {
+			return trimmed
+		}
+	}
+	buf, err := json.Marshal(map[string]string{"input": args})
+	if err != nil {
+		return `{"input":""}`
+	}
+	return string(buf)
+}
+
 func emitWebSearchCall(data string, b *sse.Builder) (bool, error) {
 	var wrap struct {
 		Item struct {
@@ -463,7 +554,7 @@ func buildRequest(r *anthropic.Request, model string, passthroughServerTools boo
 }
 
 func buildRequestWithAliases(r *anthropic.Request, model string, passthroughServerTools bool) (map[string]any, map[string]map[string]string, error) {
-	items, err := convertMessagesToItems(r.Messages, passthroughServerTools)
+	items, err := convertMessagesToItems(anthropic.NormalizeMessagesForUpstream(r.Messages, passthroughServerTools, r.HasToolSearchBeta()), passthroughServerTools)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -491,6 +582,9 @@ func applyCommonFields(body map[string]any, r *anthropic.Request, passthroughSer
 	}
 	if effort, ok := r.ReasoningEffort(); ok {
 		body["reasoning"] = map[string]any{"effort": effort}
+	}
+	if text := responsesTextFormat(r); text != nil {
+		body["text"] = text
 	}
 	// Match openai/codex HTTP request shape: tool_choice and parallel_tool_calls
 	// are always present; keep parallel calls disabled for Claude Code tools.
@@ -552,6 +646,36 @@ func responsesToolChoice(raw json.RawMessage) any {
 		}
 	}
 	return "auto"
+}
+
+func responsesTextFormat(r *anthropic.Request) any {
+	if r == nil || r.OutputConfig == nil {
+		return nil
+	}
+	format := r.OutputConfig.RawField("format")
+	if len(format) == 0 {
+		return nil
+	}
+	var f map[string]any
+	if err := json.Unmarshal(format, &f); err != nil {
+		return nil
+	}
+	typ, _ := f["type"].(string)
+	if typ == "" {
+		return nil
+	}
+	if typ == "json_schema" {
+		if _, ok := f["schema"]; !ok {
+			return nil
+		}
+		if _, ok := f["strict"]; !ok {
+			f["strict"] = true
+		}
+		if name, _ := f["name"].(string); name == "" {
+			f["name"] = "relaycode_output_schema"
+		}
+	}
+	return map[string]any{"format": f}
 }
 
 func convertMessagesToItems(msgs []anthropic.Message, passthroughServerTools bool) ([]inputItem, error) {
