@@ -2,6 +2,7 @@ package provider
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -24,7 +25,7 @@ func PostStreamWithHeaders(ctx context.Context, baseURL, path, apiKey, authHeade
 }
 
 func PostStreamWithClient(ctx context.Context, client *http.Client, maxRetries int, baseURL, path, apiKey, authHeader string, extraHeaders map[string]string, body []byte) (*bufio.Reader, io.Closer, error) {
-	req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(baseURL, "/")+path, strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(baseURL, "/")+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -55,7 +56,7 @@ func PostStreamWithClient(ctx context.Context, client *http.Client, maxRetries i
 	var lastErr error
 	for attempt := 0; attempt < attempts; attempt++ {
 		req2 := req.Clone(ctx)
-		req2.Body = io.NopCloser(strings.NewReader(string(body)))
+		req2.Body = io.NopCloser(bytes.NewReader(body))
 		resp, err := client.Do(req2)
 		if err != nil {
 			lastErr = err
