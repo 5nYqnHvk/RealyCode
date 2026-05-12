@@ -69,6 +69,7 @@ type Store struct {
 	entries map[string]*Entry
 	ttl     time.Duration
 	max     int
+	path    string
 	Stats   Stats
 }
 
@@ -81,6 +82,15 @@ func NewStore(ttl time.Duration, max int) *Store {
 		ttl:     ttl,
 		max:     max,
 	}
+}
+
+func NewFileStore(path string, ttl time.Duration, max int) (*Store, error) {
+	store, err := LoadFile(path, ttl, max)
+	if err != nil {
+		return nil, err
+	}
+	store.path = path
+	return store, nil
 }
 
 // Prepare inspects an incoming request against existing sessions and returns
@@ -189,7 +199,6 @@ func (s *Store) Commit(lookup *Lookup, provider, upstreamModel string, messageCo
 		return
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.pruneLocked()
 	if len(s.entries) >= s.max {
 		s.evictLRULocked()
@@ -209,6 +218,11 @@ func (s *Store) Commit(lookup *Lookup, provider, upstreamModel string, messageCo
 		InputTokens:      inputTokens,
 		OutputTokens:     outputTokens,
 	}
+	path := s.path
+	s.mu.Unlock()
+	if path != "" {
+		_ = s.SaveFile(path)
+	}
 }
 
 // Invalidate drops a known-bad entry (e.g. upstream returned 404 for its
@@ -218,8 +232,12 @@ func (s *Store) Invalidate(key string) {
 		return
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	delete(s.entries, key)
+	path := s.path
+	s.mu.Unlock()
+	if path != "" {
+		_ = s.SaveFile(path)
+	}
 }
 
 // Snapshot returns a shallow copy for /debug/stats.

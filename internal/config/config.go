@@ -31,6 +31,7 @@ type ServerConfig struct {
 	EnableSuggestionModeSkip     bool
 	EnableFilepathExtractionMock bool
 	LogRequestSnapshots          bool
+	ResponsesSessionStorePath    string
 }
 
 type Route struct {
@@ -116,6 +117,9 @@ func fromDoc(doc yamlMap) (*Config, error) {
 		cfg.Server.EnableSuggestionModeSkip = boolDefault(srv, "enable_suggestion_mode_skip", cfg.Server.EnableSuggestionModeSkip)
 		cfg.Server.EnableFilepathExtractionMock = boolDefault(srv, "enable_filepath_extraction_mock", cfg.Server.EnableFilepathExtractionMock)
 		cfg.Server.LogRequestSnapshots = boolAt(srv, "log_request_snapshots")
+		if v, ok := srv["responses_session_store_path"].(string); ok {
+			cfg.Server.ResponsesSessionStorePath = expandEnv(v)
+		}
 	}
 
 	routes, ok := doc["routes"].(yamlList)

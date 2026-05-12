@@ -9,6 +9,7 @@ import (
 func TestLoadParsesConfigAndExpandsEnv(t *testing.T) {
 	t.Setenv("TEST_RELAYCODE_TOKEN", "secret-token")
 	t.Setenv("TEST_RELAYCODE_KEY", "secret-key")
+	t.Setenv("TEST_RELAYCODE_STORE", "/tmp/relaycode-sessions.json")
 
 	path := filepath.Join(t.TempDir(), "relaycode.yaml")
 	body := `server:
@@ -18,6 +19,7 @@ func TestLoadParsesConfigAndExpandsEnv(t *testing.T) {
   enable_web_server_tools: true
   web_fetch_allowed_schemes: https
   web_fetch_allow_private_networks: true
+  responses_session_store_path: "${TEST_RELAYCODE_STORE}"
 
 routes:
   - match: "opus"
@@ -51,7 +53,8 @@ providers:
 	if cfg.Server.Host != "0.0.0.0" || cfg.Server.Port != 9090 || cfg.Server.AuthToken != "secret-token" ||
 		!cfg.Server.EnableWebServerTools ||
 		cfg.Server.WebFetchAllowedSchemes != "https" ||
-		!cfg.Server.WebFetchAllowPrivateNetworks {
+		!cfg.Server.WebFetchAllowPrivateNetworks ||
+		cfg.Server.ResponsesSessionStorePath != "/tmp/relaycode-sessions.json" {
 		t.Fatalf("Server = %+v", cfg.Server)
 	}
 	if len(cfg.Routes) != 2 || cfg.Routes[0].Match != "opus" || cfg.Routes[1].Match != "*" {
