@@ -30,6 +30,8 @@ import (
 	"github.com/5nYqnHvk/RelayCode/internal/webtools"
 )
 
+const maxRequestBodyBytes = 32 << 20
+
 type Server struct {
 	cfg      *config.Config
 	router   *router.Router
@@ -178,7 +180,17 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req anthropic.Request
-	rawBody, _ := io.ReadAll(r.Body)
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	rawBody, err := io.ReadAll(r.Body)
+	if err != nil {
+		status := http.StatusBadRequest
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			status = http.StatusRequestEntityTooLarge
+		}
+		http.Error(w, fmt.Sprintf(`{"type":"error","error":{"type":"invalid_request_error","message":%q}}`, err.Error()), status)
+		return
+	}
 	if err := json.Unmarshal(rawBody, &req); err != nil {
 		http.Error(w, fmt.Sprintf(`{"type":"error","error":{"type":"invalid_request_error","message":%q}}`, err.Error()), http.StatusBadRequest)
 		return
