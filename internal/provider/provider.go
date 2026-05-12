@@ -30,3 +30,17 @@ type SessionAware interface {
 
 // Factory builds an Adapter for a provider config entry.
 type Factory func(pc config.ProviderConfig) (Adapter, error)
+
+// ToolUseBridgeInstruction nudges OpenAI-style models to use the tools Claude
+// Code exposed instead of narrating tool work as plain text.
+const ToolUseBridgeInstruction = "Tool use contract for this OpenAI adapter: when the user asks you to inspect files, run commands, edit, write, test, or otherwise do work in the local environment, call the appropriate available tool in the same response. Do not only say that you will start. If no tool is needed, answer normally."
+
+func InstructionsWithToolUseBridge(instructions string, hasTools bool) string {
+	if !hasTools {
+		return instructions
+	}
+	if instructions == "" {
+		return ToolUseBridgeInstruction
+	}
+	return instructions + "\n\n" + ToolUseBridgeInstruction
+}

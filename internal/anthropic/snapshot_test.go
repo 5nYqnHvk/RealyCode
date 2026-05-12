@@ -8,9 +8,10 @@ import (
 
 func TestSnapshotOmitsRawContent(t *testing.T) {
 	req := &Request{
-		Model:    "claude",
-		Messages: []Message{{Role: "user", Content: Content{Raw: "secret prompt text"}}, {Role: "assistant", Content: Content{Blocks: []Block{{Type: "tool_use", Name: "Read"}}}}},
-		Tools:    []Tool{{Name: "Read"}},
+		Model:      "claude",
+		Messages:   []Message{{Role: "user", Content: Content{Raw: "secret prompt text"}}, {Role: "assistant", Content: Content{Blocks: []Block{{Type: "tool_use", Name: "Read"}}}}},
+		Tools:      []Tool{{Name: "Read"}},
+		ToolChoice: json.RawMessage(`{"type":"tool","name":"Read"}`),
 	}
 	raw := SnapshotJSON(req)
 	if strings.Contains(raw, "secret prompt text") {
@@ -20,7 +21,7 @@ func TestSnapshotOmitsRawContent(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &snap); err != nil {
 		t.Fatal(err)
 	}
-	if snap.Model != "claude" || snap.MessageCount != 2 || snap.Messages[0].ContentLength != len("secret prompt text") || snap.Messages[1].BlockTypes[0] != "tool_use" || snap.ToolNames[0] != "Read" {
+	if snap.Model != "claude" || snap.MessageCount != 2 || snap.Messages[0].ContentLength != len("secret prompt text") || snap.Messages[1].BlockTypes[0] != "tool_use" || snap.ToolNames[0] != "Read" || snap.ToolChoice != "tool" || snap.ToolChoiceName != "Read" {
 		t.Fatalf("snapshot = %+v", snap)
 	}
 }

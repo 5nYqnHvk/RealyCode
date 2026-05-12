@@ -71,6 +71,10 @@ func TestBuildRequestMapsOutputConfigEffort(t *testing.T) {
 	if reasoning["effort"] != "xhigh" {
 		t.Fatalf("reasoning.effort = %v", reasoning["effort"])
 	}
+	include := body["include"].([]string)
+	if len(include) != 1 || include[0] != "reasoning.encrypted_content" {
+		t.Fatalf("include = %+v", include)
+	}
 }
 
 func TestBuildRequestMapsOutputFormatToTextFormat(t *testing.T) {
@@ -167,6 +171,54 @@ func TestBuildRequestMapsForcedFunctionToolChoice(t *testing.T) {
 	choice := body["tool_choice"].(map[string]any)
 	if choice["type"] != "function" || choice["name"] != "bash" {
 		t.Fatalf("tool_choice = %+v", choice)
+	}
+}
+
+func TestBuildRequestMapsAnyToolChoiceToRequired(t *testing.T) {
+	req := &anthropic.Request{ToolChoice: json.RawMessage(`{"type":"any"}`)}
+	body, err := buildRequest(req, "gpt", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["tool_choice"] != "required" {
+		t.Fatalf("tool_choice = %+v", body["tool_choice"])
+	}
+}
+
+func TestBuildRequestAddsToolUseBridgeInstruction(t *testing.T) {
+	req := &anthropic.Request{
+		System: json.RawMessage(`"base instructions"`),
+		Tools: []anthropic.Tool{{
+			Name:        "Read",
+			InputSchema: json.RawMessage(`{"type":"object"}`),
+		}},
+	}
+	body, err := buildRequest(req, "gpt", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instructions := body["instructions"].(string)
+	if !strings.Contains(instructions, "base instructions") || !strings.Contains(instructions, toolUseBridgeInstruction) {
+		t.Fatalf("instructions = %q", instructions)
+	}
+}
+
+func TestBuildRequestSkipsToolBridgeWhenToolChoiceNone(t *testing.T) {
+	req := &anthropic.Request{
+		System:     json.RawMessage(`"base instructions"`),
+		ToolChoice: json.RawMessage(`{"type":"none"}`),
+		Tools: []anthropic.Tool{{
+			Name:        "Read",
+			InputSchema: json.RawMessage(`{"type":"object"}`),
+		}},
+	}
+	body, err := buildRequest(req, "gpt", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instructions := body["instructions"].(string)
+	if strings.Contains(instructions, toolUseBridgeInstruction) {
+		t.Fatalf("instructions = %q", instructions)
 	}
 }
 

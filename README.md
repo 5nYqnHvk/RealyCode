@@ -172,9 +172,12 @@ See `relaycode.example.yaml` for full commented config.
 
 ### `openai_responses`
 
-- Sends `model`, `input`, `stream: true`, `instructions`, `max_output_tokens`, `top_p`, tools, function-call outputs, `tool_choice`, `parallel_tool_calls: true`, and `store: false`.
+- Sends `model`, `input`, `stream: true`, `instructions`, `max_output_tokens`, `top_p`, tools, function-call outputs, `tool_choice`, `parallel_tool_calls: false`, and `store: false`.
 - Omits `temperature` because current Responses targets used by RelayCode reject or ignore it inconsistently.
 - Sets `prompt_cache_key` from Claude Code session id when available.
+- Adds `include: ["reasoning.encrypted_content"]` when reasoning is requested, matching Codex Responses requests.
+- Adds a short tool-use bridge instruction for OpenAI models so tool-work requests do not end after a text preamble.
+- Maps Anthropic `tool_choice: {"type":"any"}` to OpenAI `required`.
 - Drops replayed raw Anthropic thinking blocks and strips unsupported server-tool declarations unless `experimental_passthrough_server_tools` is enabled.
 - Rejects user image blocks.
 - `codex_auth_path` can read local Codex auth JSON and use `tokens.access_token` / `tokens.account_id` for compatible OpenAI endpoints.

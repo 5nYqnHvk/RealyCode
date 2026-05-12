@@ -563,13 +563,21 @@ func buildRequestWithAliases(r *anthropic.Request, model string, passthroughServ
 		"input":  items,
 		"stream": true,
 	}
-	if sysText, err := anthropic.SystemText(r.System); err != nil {
+	sysText, err := anthropic.SystemText(r.System)
+	if err != nil {
 		return nil, nil, err
-	} else if sysText != "" {
+	}
+	if sysText = responsesInstructions(sysText, len(anthropic.ToolsForUpstream(r.Tools, passthroughServerTools)) > 0 && !isToolChoiceNone(r.ToolChoice)); sysText != "" {
 		body["instructions"] = sysText
 	}
 	aliases := applyCommonFields(body, r, passthroughServerTools)
 	return body, aliases, nil
+}
+
+const toolUseBridgeInstruction = provider.ToolUseBridgeInstruction
+
+func responsesInstructions(sysText string, hasTools bool) string {
+	return provider.InstructionsWithToolUseBridge(sysText, hasTools)
 }
 
 func applyCommonFields(body map[string]any, r *anthropic.Request, passthroughServerTools bool) map[string]map[string]string {
@@ -582,6 +590,7 @@ func applyCommonFields(body map[string]any, r *anthropic.Request, passthroughSer
 	}
 	if effort, ok := r.ReasoningEffort(); ok {
 		body["reasoning"] = map[string]any{"effort": effort}
+		body["include"] = []string{"reasoning.encrypted_content"}
 	}
 	if text := responsesTextFormat(r); text != nil {
 		body["text"] = text
@@ -624,6 +633,19 @@ func toResponsesToolDecl(t anthropic.Tool, params json.RawMessage) toolDecl {
 	}
 }
 
+func isToolChoiceNone(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var choice struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(raw, &choice); err != nil {
+		return false
+	}
+	return choice.Type == "none"
+}
+
 func responsesToolChoice(raw json.RawMessage) any {
 	if len(raw) == 0 {
 		return "auto"
@@ -636,8 +658,10 @@ func responsesToolChoice(raw json.RawMessage) any {
 		return "auto"
 	}
 	switch choice.Type {
-	case "auto", "any":
+	case "auto":
 		return "auto"
+	case "any":
+		return "required"
 	case "none":
 		return "none"
 	case "tool":
