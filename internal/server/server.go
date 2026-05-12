@@ -49,11 +49,15 @@ func New(cfg *config.Config) (*Server, error) {
 			return nil, fmt.Errorf("provider %q: unsupported kind %q", name, pc.Kind)
 		}
 	}
+	sessions, err := session.NewFileStore(cfg.Server.ResponsesSessionStorePath, 60*time.Minute, 1000)
+	if err != nil {
+		return nil, fmt.Errorf("responses session store: %w", err)
+	}
 	return &Server{
 		cfg:      cfg,
 		router:   router.New(cfg),
 		adapters: map[string]provider.Adapter{},
-		sessions: session.NewStore(60*time.Minute, 1000),
+		sessions: sessions,
 		addr:     net.JoinHostPort(cfg.Server.Host, strconv.Itoa(cfg.Server.Port)),
 	}, nil
 }
@@ -94,6 +98,7 @@ func (s *Server) Addr() string { return s.addr }
 func (s *Server) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/messages", s.handleMessages)
+	mux.HandleFunc("/v1/models", s.handleModels)
 	mux.HandleFunc("/debug/stats", s.handleStats)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -120,6 +125,35 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		return err
 	}
+}
+
+func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.cfg.Server.AuthToken != "" && !authOK(r, s.cfg.Server.AuthToken) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	w.Header().Set("Allow", "GET, HEAD, OPTIONS")
+	if r.Method == http.MethodHead || r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	type modelView struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		OwnedBy string `json:"owned_by"`
+	}
+	models := s.router.Models()
+	data := make([]modelView, 0, len(models))
+	for _, model := range models {
+		data = append(data, modelView{ID: model.ID, Object: "model", OwnedBy: model.ProviderName})
+	}
+	out := map[string]any{"object": "list", "data": data}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(out)
 }
 
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {

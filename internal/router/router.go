@@ -15,6 +15,13 @@ type Resolved struct {
 	Model        string
 }
 
+type ModelInfo struct {
+	ID            string
+	ProviderName  string
+	UpstreamModel string
+	Kind          config.ProviderKind
+}
+
 type Router struct {
 	routes    []config.Route
 	providers map[string]config.ProviderConfig
@@ -43,6 +50,23 @@ func (r *Router) Resolve(model string) (Resolved, error) {
 		return r.bind(fallback)
 	}
 	return Resolved{}, fmt.Errorf("no route matches model %q and no fallback configured", model)
+}
+
+func (r *Router) Models() []ModelInfo {
+	seen := map[string]bool{}
+	out := make([]ModelInfo, 0, len(r.routes))
+	for _, rt := range r.routes {
+		if seen[rt.Model] {
+			continue
+		}
+		p, ok := r.providers[rt.Provider]
+		if !ok {
+			continue
+		}
+		seen[rt.Model] = true
+		out = append(out, ModelInfo{ID: rt.Model, ProviderName: rt.Provider, UpstreamModel: rt.Model, Kind: p.Kind})
+	}
+	return out
 }
 
 func (r *Router) bind(rt *config.Route) (Resolved, error) {
