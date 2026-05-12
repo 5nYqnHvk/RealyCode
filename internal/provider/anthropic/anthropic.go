@@ -46,7 +46,9 @@ func (a *Adapter) Stream(ctx context.Context, req *anthropictypes.Request, upstr
 			return ctx.Err()
 		}
 	}
-	body := cloneRequest(req)
+	normalizedReq := *req
+	normalizedReq.Messages = anthropictypes.NormalizeMessagesForUpstream(req.Messages, true, req.HasToolSearchBeta())
+	body := cloneRequest(&normalizedReq)
 	body["model"] = upstreamModel
 	body["stream"] = true
 	if _, ok := body["max_tokens"]; !ok || body["max_tokens"] == 0 {
@@ -54,7 +56,7 @@ func (a *Adapter) Stream(ctx context.Context, req *anthropictypes.Request, upstr
 	}
 	raw, _ := json.Marshal(body)
 
-	reader, closer, err := a.postStream(ctx, raw)
+	reader, closer, err := a.postStream(ctx, raw, req.Betas)
 	if err != nil {
 		b.Start()
 		b.FinishWithError(err.Error())
@@ -71,7 +73,7 @@ func cloneRequest(req *anthropictypes.Request) map[string]any {
 	return body
 }
 
-func (a *Adapter) postStream(ctx context.Context, body []byte) (*bufio.Reader, io.Closer, error) {
+func (a *Adapter) postStream(ctx context.Context, body []byte, betas []string) (*bufio.Reader, io.Closer, error) {
 	url := strings.TrimRight(a.pc.BaseURL, "/") + "/messages"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(body)))
 	if err != nil {
@@ -81,6 +83,9 @@ func (a *Adapter) postStream(ctx context.Context, body []byte) (*bufio.Reader, i
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("x-api-key", a.pc.APIKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
+	if len(betas) > 0 {
+		req.Header.Set("anthropic-beta", strings.Join(betas, ","))
+	}
 	return a.doStreamWithRetry(ctx, req, body)
 }
 
