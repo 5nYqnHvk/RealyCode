@@ -28,25 +28,34 @@ func ForcedServerToolName(req *anthropic.Request) string {
 }
 
 func HasToolNamed(req *anthropic.Request, name string) bool {
+	_, ok := findToolNamed(req, name)
+	return ok
+}
+
+func findToolNamed(req *anthropic.Request, name string) (anthropic.Tool, bool) {
 	for _, tool := range req.Tools {
 		if tool.Name == name {
-			return true
+			return tool, true
 		}
 	}
-	return false
+	return anthropic.Tool{}, false
 }
 
 func IsWebServerToolRequest(req *anthropic.Request) bool {
 	name := ForcedServerToolName(req)
-	return name != "" && HasToolNamed(req, name)
+	if name == "" {
+		return false
+	}
+	tool, ok := findToolNamed(req, name)
+	return ok && IsAnthropicWebServerTool(tool)
 }
 
 func IsAnthropicWebServerTool(tool anthropic.Tool) bool {
-	name := strings.TrimSpace(tool.Name)
-	if name == "web_search" || name == "web_fetch" {
+	if strings.HasPrefix(tool.Type, "web_search") || strings.HasPrefix(tool.Type, "web_fetch") {
 		return true
 	}
-	return strings.HasPrefix(tool.Type, "web_search") || strings.HasPrefix(tool.Type, "web_fetch")
+	name := strings.TrimSpace(tool.Name)
+	return tool.Type == "" && len(tool.InputSchema) == 0 && (name == "web_search" || name == "web_fetch")
 }
 
 func HasListedAnthropicWebServerTools(req *anthropic.Request) bool {

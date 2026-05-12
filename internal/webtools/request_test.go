@@ -48,3 +48,16 @@ func TestForcedToolTurnTextUsesLatestUser(t *testing.T) {
 		t.Fatalf("ForcedToolTurnText = %q", got)
 	}
 }
+
+func TestCustomWebSearchToolIsNotServerToolRequest(t *testing.T) {
+	req := &anthropic.Request{
+		Tools:      []anthropic.Tool{{Name: "web_search", Type: "custom", InputSchema: json.RawMessage(`{"type":"object"}`)}},
+		ToolChoice: json.RawMessage(`{"type":"tool","name":"web_search"}`),
+	}
+	if IsWebServerToolRequest(req) {
+		t.Fatal("custom web_search function was treated as Anthropic server tool")
+	}
+	if HasListedAnthropicWebServerTools(req) {
+		t.Fatal("custom web_search function was listed as Anthropic server tool")
+	}
+}
