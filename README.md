@@ -49,7 +49,8 @@ These numbers are workload/provider dependent. RelayCode records request count, 
 - Streaming translation for text, reasoning/thinking, tool calls, tool input deltas, stop reasons, and token counts where available.
 - Claude Code fast paths for quota probe, command prefix detection, title generation, suggestion mode, and filepath extraction.
 - Optional local handling for forced Anthropic `web_search` / `web_fetch` requests.
-- `/debug/stats` for in-memory Responses session/cache counters.
+- Minimal `/v1/models` list derived from configured routes.
+- `/debug/stats` for Responses session/cache counters, with optional file persistence.
 
 ## Install
 
@@ -122,6 +123,7 @@ server:
   enable_suggestion_mode_skip: true
   enable_filepath_extraction_mock: true
   log_request_snapshots: false
+  responses_session_store_path: ""  # optional durable Responses session/cache metadata JSON
 
 routes:
   - match: "opus"
@@ -180,6 +182,7 @@ See `relaycode.example.yaml` for full commented config.
 - Maps Anthropic `tool_choice: {"type":"any"}` to OpenAI `required`.
 - Drops replayed raw Anthropic thinking blocks and strips unsupported server-tool declarations unless `experimental_passthrough_server_tools` is enabled.
 - HTTP Responses follows Codex: full input every turn with `prompt_cache_key`; `previous_response_id` is left off unless `experimental_previous_response_id` is explicitly enabled for a backend that supports HTTP continuation.
+- Schema-less Anthropic `custom` tools are sent as Responses `custom` tools with text input; schema-backed tools remain function tools.
 - Rejects user image blocks.
 - `codex_auth_path` can read local Codex auth JSON and use `tokens.access_token` / `tokens.account_id` for compatible OpenAI endpoints.
 
@@ -208,7 +211,8 @@ See `relaycode.example.yaml` for full commented config.
 | Tool argument streaming | Works | Mapped to Anthropic `input_json_delta`. |
 | Thinking/reasoning deltas | Works | Chat reasoning and Responses reasoning events map to `thinking_delta`. |
 | Local `web_search` / `web_fetch` | Optional | Requires `server.enable_web_server_tools: true` and forced Anthropic server-tool choice. |
-| Provider-side server tools | Experimental | `openai_responses` only; enable `experimental_passthrough_server_tools` when upstream supports those tool shapes. |
+| Provider-side server tools | Experimental | `openai_responses` only; enable `experimental_passthrough_server_tools` when upstream supports those tool shapes. Without passthrough, replayed server/MCP history is degraded to text context. |
+| Responses custom/freeform tools | Works | Schema-less `custom` tools use Responses `custom` declarations; streamed freeform input is wrapped back into Anthropic tool input. |
 | Images | Native Anthropic only | OpenAI adapters reject user image blocks. |
 
 Local web tools are lightweight substitutes, not Anthropic-equivalent browsing: `web_search` uses DuckDuckGo Lite and returns at most 5 results; `web_fetch` follows at most 5 redirects, reads at most 1 MiB, and returns at most 20,000 chars.
@@ -244,7 +248,7 @@ Example response:
 }
 ```
 
-The endpoint may also include reserved counters such as `forced_replays` and `expired_invalid`; current code exposes them but does not increment them yet.
+The endpoint also includes counters such as `forced_replays` and `expired_invalid` when continuation fallback or invalidation happens.
 
 Debug logging:
 
@@ -258,8 +262,8 @@ Debug logging:
 - `/v1/messages` and `/debug/stats` require auth when `auth_token` is set. `/health` is always unauthenticated on the bound interface.
 - RelayCode serves plain HTTP. Use a reverse proxy for TLS outside localhost.
 - No prompt logging by default. `RELAYCODE_DEBUG_REQUEST=1` prints raw prompts.
-- Session/cache metadata is in memory only and resets on restart.
-- Responses cache reuse depends on upstream `prompt_cache_key`; RelayCode does not use WebSocket `previous_response_id` transport.
+- Session/cache metadata is in memory by default; set `server.responses_session_store_path` to persist metadata across restarts.
+- Responses cache reuse depends on upstream `prompt_cache_key`; persisted `previous_response_id` metadata still falls back to full replay if upstream rejects it.
 - Retries apply only to transport errors, HTTP 429, and HTTP 5xx before stream acceptance. Mid-stream provider failures return Anthropic SSE errors.
 
 ## Troubleshooting

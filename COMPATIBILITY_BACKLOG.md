@@ -1,29 +1,43 @@
 # Compatibility Backlog
 
-This file tracks the remaining Claude Code / Codex parity work after the current tool-call compatibility pass. It is intentionally based on the current implementation notes only; no fresh upstream reference scan was performed for this backlog.
+This file tracks Claude Code / Codex parity work after the Responses/custom-tool compatibility pass. RelayCode's Go scope remains easy installation, OpenAI Chat fallback, and OpenAI Responses/cache-focused translation rather than full `../cc` feature breadth.
 
-## Remaining Work
+## Completed In Current Pass
 
-### Codex Namespace And Freeform Tool Declarations
+### Responses Custom/Freeform Tool Surface
 
-RelayCode still serializes model-visible tools as flat function declarations for OpenAI Chat and Responses. Future work should add first-class support for Codex-style namespace tool specs and freeform/custom tool declarations, including provider-specific routing for namespaced MCP tools and non-JSON freeform inputs.
+Schema-less Anthropic `custom` tools now serialize as Responses `custom` tool declarations with text format. Responses custom tool call deltas map back to Anthropic `tool_use`, and full replay can emit `custom_tool_call` / `custom_tool_call_output` items when the tool name is known from the transcript.
 
-### Server And MCP Tool Replay Semantics
+### Server And MCP Tool Replay Preservation
 
-OpenAI routes still drop or simplify many server/MCP history blocks that they cannot execute directly. Future work should preserve enough server/MCP use/result history to replay resumed Claude Code transcripts without losing context, while still guarding unsupported upstream providers.
+OpenAI routes no longer silently erase unsupported server/MCP history by default. When passthrough is disabled, server/MCP blocks are degraded to text summaries so resumed transcripts retain model-visible context without pretending the upstream can execute Anthropic server tools.
 
-### Responses Custom Tool Output Parity
+### Structured Output And Beta Body Policy
 
-Responses streaming now accepts custom tool input deltas, but custom/freeform tool declarations and custom tool output replay are still represented through the regular function-tool path. Future work should add the full Responses custom tool call/output item surface.
+OpenAI Chat and Responses now use explicit structured-output handling: `json_schema`, `json_object`, and `text` are accepted; malformed or unsupported formats return clear errors. Anthropic-only body fields such as `context_management` and unknown extras are rejected on OpenAI routes instead of being silently ignored.
 
-### Structured Output Edge Cases
+### Minimal Model Listing
 
-Basic `output_config.format` mapping exists for OpenAI Chat and Responses. Future work should harden schema naming, strict defaults, non-JSON-schema formats, and provider/model compatibility behavior so structured output behaves consistently across routes.
-
-### Beta Body Mapping For Non-Anthropic Routes
-
-Native Anthropic egress preserves `betas`, `context_management`, and unknown body fields. OpenAI routes intentionally ignore most Anthropic-only beta body fields today. Future work should decide which fields can be safely translated, forwarded to compatible gateways, or rejected with clear errors.
+`GET /v1/models` returns a static OpenAI-style list derived from configured routes. It does not probe upstream providers.
 
 ### Durable Session Store
 
-Responses chaining is currently in-memory and falls back to full replay when upstream invalidates a `previous_response_id`. Future work could persist session metadata across RelayCode restarts and add stronger output-item baseline validation for incremental continuation.
+`server.responses_session_store_path` enables optional JSON persistence for Responses session metadata and stats. Loaded entries are TTL-pruned and still fall back to full replay when upstream rejects a persisted `previous_response_id`.
+
+## Remaining Work
+
+### Codex Namespace Tool Declarations
+
+RelayCode still does not model full Codex namespace specs for MCP-style tool groups. Future work should add namespace metadata only if it improves real Claude Code / Responses compatibility.
+
+### Stronger Custom Tool Output In Chained Tails
+
+Full replay can infer custom output type from prior assistant tool calls. `previous_response_id` tail-only tool results may still be ambiguous when the prior custom call exists only in upstream state. Future work can persist call-id -> tool-kind metadata if a target Responses backend requires `custom_tool_call_output` in chained tails.
+
+### Provider-Specific Responses Drift
+
+Responses custom/freeform shapes can differ across OpenAI-compatible gateways. Keep fixture coverage updated from real Claude Code/OpenAI/Codex traces and gate gateway-specific behavior behind config only when needed.
+
+### Image Translation
+
+OpenAI adapters still reject user image blocks. Native Anthropic routes remain the supported path for vision turns until a Responses image mapping is needed.
