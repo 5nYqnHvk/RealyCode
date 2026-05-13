@@ -1,4 +1,7 @@
 # ephemeral build artifact
 /relaycode
+# local capture output can contain prompts/tool args
+/relay-capture/
 # user-specific config (example is tracked)
-/relaycode.yaml
+/relaycode*.yaml
+!/relaycode.example.yaml

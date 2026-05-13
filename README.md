@@ -394,6 +394,10 @@ Debug logging:
   locally; this can include prompt text.
 - `server.log_request_snapshots: true` or `RELAYCODE_LOG_REQUEST_SNAPSHOTS=1`:
   logs scrubbed request shape snapshots without raw prompt text.
+- `RELAYCODE_CAPTURE_DIR=/tmp/relaycode-capture`: writes one directory per
+  request with `incoming_anthropic.json`, per-call `upstream/*/request.json`, and
+  split SSE frames under `upstream/*/events/` and `downstream_events/`. Use only
+  with throwaway prompts; request and tool content are captured for fixture generation.
 
 ## Limitations
 
@@ -417,7 +421,8 @@ Debug logging:
   reverse proxy (Caddy, nginx, Cloudflare Tunnel) when not on localhost.
 - **No prompt logging by default.** `RELAYCODE_DEBUG_REQUEST=1` prints raw
   request bodies; use only locally for debugging. `log_request_snapshots`
-  prints shape-only snapshots without raw prompt text.
+  prints shape-only snapshots without raw prompt text. `RELAYCODE_CAPTURE_DIR`
+  writes raw request/tool content for local fixture capture only.
 - **Provider keys via env.** Prefer `${OPENAI_API_KEY}` / `${DEEPSEEK_API_KEY}`
   over pasting keys into `relaycode.yaml`.
 - **Session store is in memory by default.** Set

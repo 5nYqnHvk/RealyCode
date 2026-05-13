@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	anthropictypes "github.com/5nYqnHvk/RelayCode/internal/anthropic"
 	"github.com/5nYqnHvk/RelayCode/internal/config"
@@ -74,53 +73,11 @@ func cloneRequest(req *anthropictypes.Request) map[string]any {
 }
 
 func (a *Adapter) postStream(ctx context.Context, body []byte, betas []string) (*bufio.Reader, io.Closer, error) {
-	url := strings.TrimRight(a.pc.BaseURL, "/") + "/messages"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(body)))
-	if err != nil {
-		return nil, nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "text/event-stream")
-	req.Header.Set("x-api-key", a.pc.APIKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
+	extraHeaders := map[string]string{"anthropic-version": "2023-06-01"}
 	if len(betas) > 0 {
-		req.Header.Set("anthropic-beta", strings.Join(betas, ","))
+		extraHeaders["anthropic-beta"] = strings.Join(betas, ",")
 	}
-	return a.doStreamWithRetry(ctx, req, body)
-}
-
-func (a *Adapter) doStreamWithRetry(ctx context.Context, req *http.Request, body []byte) (*bufio.Reader, io.Closer, error) {
-	attempts := a.pc.MaxRetries + 1
-	if attempts < 1 {
-		attempts = 1
-	}
-	var lastErr error
-	for attempt := 0; attempt < attempts; attempt++ {
-		req2 := req.Clone(ctx)
-		req2.Body = io.NopCloser(strings.NewReader(string(body)))
-		resp, err := a.client.Do(req2)
-		if err != nil {
-			lastErr = err
-		} else if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-			snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-			resp.Body.Close()
-			lastErr = fmt.Errorf("upstream %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet)))
-		} else if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-			resp.Body.Close()
-			return nil, nil, fmt.Errorf("upstream %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet)))
-		} else {
-			return bufio.NewReaderSize(resp.Body, 1<<15), resp.Body, nil
-		}
-		if attempt+1 < attempts {
-			select {
-			case <-ctx.Done():
-				return nil, nil, ctx.Err()
-			case <-time.After(time.Duration(attempt+1) * 250 * time.Millisecond):
-			}
-		}
-	}
-	return nil, nil, lastErr
+	return provider.PostStreamWithClient(ctx, a.client, a.pc.MaxRetries, a.pc.BaseURL, "/messages", a.pc.APIKey, "x-api-key", extraHeaders, body)
 }
 
 func pipeRawSSE(reader *bufio.Reader, b *sse.Builder, thinkingEnabled bool) error {

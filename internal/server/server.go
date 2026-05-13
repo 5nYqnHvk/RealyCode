@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/5nYqnHvk/RelayCode/internal/anthropic"
+	"github.com/5nYqnHvk/RelayCode/internal/capture"
 	"github.com/5nYqnHvk/RelayCode/internal/config"
 	"github.com/5nYqnHvk/RelayCode/internal/optim"
 	"github.com/5nYqnHvk/RelayCode/internal/provider"
@@ -283,9 +284,15 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("messages: incoming=%s -> provider=%s upstream_model=%s", req.Model, resolved.ProviderName, resolved.Model)
 
+	ctx, err := capture.Start(r.Context(), rawBody, req.Model, resolved.ProviderName, resolved.Model)
+	if err != nil {
+		log.Printf("messages: capture error: %v", err)
+		ctx = r.Context()
+	}
+	w = capture.WrapDownstream(ctx, w)
 	sw := sse.NewWriter(w)
 	builder := sse.NewBuilder(sw, newMessageID(), req.Model, estimateInputTokens(&req))
-	if err := adapter.Stream(r.Context(), &req, resolved.Model, builder); err != nil {
+	if err := adapter.Stream(ctx, &req, resolved.Model, builder); err != nil {
 		log.Printf("messages: adapter error: %v", err)
 	}
 	if !builder.Finished() {

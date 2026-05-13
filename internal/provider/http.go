@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/5nYqnHvk/RelayCode/internal/capture"
 	"github.com/5nYqnHvk/RelayCode/internal/config"
 )
 
@@ -46,6 +47,10 @@ func PostStreamWithClient(ctx context.Context, client *http.Client, maxRetries i
 			req.Header.Set(name, value)
 		}
 	}
+	ctx, err = capture.StartUpstream(ctx, req, body)
+	if err != nil {
+		return nil, nil, err
+	}
 	if client == nil {
 		client = http.DefaultClient
 	}
@@ -75,7 +80,8 @@ func PostStreamWithClient(ctx context.Context, client *http.Client, maxRetries i
 				resp.Body.Close()
 				return nil, nil, fmt.Errorf("upstream %d non-SSE response (%s): %s", resp.StatusCode, strings.TrimSpace(contentType), strings.TrimSpace(string(snippet)))
 			}
-			return bufio.NewReaderSize(resp.Body, 1<<15), resp.Body, nil
+			body := capture.WrapResponse(ctx, resp.Body)
+			return bufio.NewReaderSize(body, 1<<15), body, nil
 		}
 		if attempt+1 < attempts {
 			select {
