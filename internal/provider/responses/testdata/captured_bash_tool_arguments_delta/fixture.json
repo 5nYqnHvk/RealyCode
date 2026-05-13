@@ -1,0 +1,39 @@
+{
+  "name": "captured bash tool arguments delta",
+  "streams": ["events"],
+  "request": {
+    "metadata": {"user_id":"{\"session_id\":\"sess_fixture_capture_bash\"}"},
+    "messages": [
+      {"role": "user", "content": "list files"}
+    ],
+    "tools": [
+      {
+        "name": "Bash",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "command": {"type": "string"},
+            "timeout": {"type": "number"},
+            "description": {"type": "string"},
+            "run_in_background": {"type": "boolean"},
+            "dangerouslyDisableSandbox": {"type": "boolean"}
+          },
+          "required": ["command", "description"]
+        }
+      }
+    ],
+    "output_config": {"effort": "max"}
+  },
+  "want_body": {
+    "prompt_cache_key": "sess_fixture_capture_bash",
+    "reasoning": true,
+    "tool_type": "function",
+    "tool_name": "Bash"
+  },
+  "want_output": [
+    "\"type\":\"tool_use\"",
+    "\"name\":\"Bash\"",
+    "\"partial_json\":\"{\\\"command\\\":\\\"ls\\\",\\\"dangerouslyDisableSandbox\\\":false,\\\"description\\\":\\\"List current directory contents\\\",\\\"run_in_background\\\":false,\\\"timeout\\\":120000}\"",
+    "\"stop_reason\":\"tool_use\""
+  ]
+}

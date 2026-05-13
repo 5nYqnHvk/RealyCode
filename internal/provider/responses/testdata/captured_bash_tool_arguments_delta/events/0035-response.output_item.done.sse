@@ -1,0 +1,3 @@
+event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"id":"fc_fixture_capture_bash","type":"function_call","status":"completed","arguments":"{\"command\":\"ls\",\"timeout\":120000,\"description\":\"List current directory contents\",\"run_in_background\":false,\"dangerouslyDisableSandbox\":false}","call_id":"call_fixture_capture_bash","name":"Bash"},"output_index":0,"sequence_number":34}
+

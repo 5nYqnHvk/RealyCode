@@ -1,0 +1,36 @@
+{
+  "name": "captured function call arguments delta",
+  "streams": ["events"],
+  "request": {
+    "metadata": {"user_id":"{\"session_id\":\"sess_fixture_capture\"}"},
+    "messages": [
+      {"role": "user", "content": "mark task done"}
+    ],
+    "tools": [
+      {
+        "name": "TaskUpdate",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "taskId": {"type": "string"},
+            "status": {"type": "string"}
+          },
+          "required": ["taskId", "status"]
+        }
+      }
+    ],
+    "output_config": {"effort": "max"}
+  },
+  "want_body": {
+    "prompt_cache_key": "sess_fixture_capture",
+    "reasoning": true,
+    "tool_type": "function",
+    "tool_name": "TaskUpdate"
+  },
+  "want_output": [
+    "\"type\":\"tool_use\"",
+    "\"name\":\"TaskUpdate\"",
+    "\"partial_json\":\"{\\\"status\\\":\\\"completed\\\",\\\"taskId\\\":\\\"1\\\"}\"",
+    "\"stop_reason\":\"tool_use\""
+  ]
+}

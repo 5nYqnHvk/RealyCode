@@ -59,6 +59,8 @@ func TestClaudeCodeResponsesFixtures(t *testing.T) {
 		"function_call_arguments_done",
 		"done_only_function_call",
 		"custom_tool_call_input_delta",
+		"captured_function_call_arguments_delta",
+		"captured_bash_tool_arguments_delta",
 		"previous_response_id_chain",
 	} {
 		fixture := loadResponsesFixture(t, dir)
