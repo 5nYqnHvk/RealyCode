@@ -1,8 +1,8 @@
 # RelayCode
 
 <p align="center">
-  <strong>Run Claude Code through OpenAI-compatible, DeepSeek-style, or Anthropic backends.</strong><br/>
-  <em>Single Go binary. Anthropic Messages in, Anthropic SSE out. Responses routes can reuse upstream prompt cache.</em>
+  <strong>Run Claude Code on GPT-5.5. Or DeepSeek. Or anything OpenAI-compatible.</strong><br/>
+  <em>Single-binary proxy. Upstream prompt caching. Up to ~98% input token reuse in one observed long-session workload</em>
 </p>
 
 <p align="center">
@@ -13,7 +13,23 @@
   <img alt="Platforms" src="https://img.shields.io/badge/platforms-linux%20%7C%20macOS%20%7C%20windows-555?style=flat-square">
 </p>
 
-RelayCode is a local proxy for Claude Code. It accepts Anthropic Messages API requests at `/v1/messages`, routes by incoming Claude model name, calls a configured upstream provider, then streams Anthropic-shaped SSE back to Claude Code.
+<p align="center">
+  <a href="#why-this-exists">Why this exists</a> ·
+  <a href="#install">Install</a> ·
+  <a href="#quickstart">Quickstart</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#configuration">Configuration</a> ·
+  <a href="#providers">Providers</a> ·
+  <a href="#security">Security</a> ·
+  <a href="#faq">FAQ</a> ·
+  <a href="#troubleshooting">Troubleshooting</a>
+</p>
+
+---
+
+RelayCode sits between **Claude Code** and model backends. It accepts Anthropic
+Messages API requests at `/v1/messages`, routes each request by incoming Claude
+model name, then streams Anthropic-shaped SSE back to the client.
 
 Supported upstream protocols:
 
@@ -21,45 +37,84 @@ Supported upstream protocols:
 - OpenAI Responses (`openai_responses`, `POST /v1/responses`)
 - Native Anthropic Messages passthrough (`anthropic_messages`, `POST /v1/messages`)
 
-## Why use it
+Common use: keep Claude Code UX while routing Opus/Sonnet/Haiku requests to
+OpenAI-compatible backends, DeepSeek-style chat endpoints, or Anthropic native
+routes.
 
-Claude Code sends conversation history every request. Long agent sessions can replay tens of thousands of input tokens per turn. `openai_responses` routes set `prompt_cache_key` from Claude Code session metadata when available, so compatible upstreams can reuse the stable prompt prefix.
+## Why this exists
 
-Observed long-session build run through a Responses route:
+Claude Code normally sends conversation history every request. Long agentic
+sessions get expensive fast: each tool cycle adds more transcript, and later
+requests can replay tens of thousands of input tokens.
+
+RelayCode was built to test a different shape: keep Claude Code as the local
+agent UI, but route model calls through a Responses-style backend with upstream
+prompt caching. In one end-to-end development run, RelayCode was built from
+scratch to working state in about **8 hours**, using about **$150** of model spend
+while running Claude Code through RelayCode with a **GPT-5.5** route.
+
+Observed token/cost behavior from that run:
 
 | Scenario | Observed result |
 |---|---|
-| First request | ~20k-30k input tokens |
-| Later cached requests | usually ~1k-2k new input tokens |
-| Tool-compatibility test | ~40 requests for about $2-$3 |
+| First request in a session | ~20k-30k input tokens |
+| Later cached requests | usually ~1k-2k input tokens |
+| Claude Code tool-compatibility test | ~40 requests for about $2-$3 |
+| Metrics tracked | request count, cost, input/output tokens, cache read/write |
 
-These numbers are workload/provider dependent. RelayCode records request count, token usage, and cache hit/miss stats when upstream usage data is available.
+Real RelayCode log from one session (abbreviated, showing `cache_miss` on the
+first turn and `cache_hit` on every turn after — `cached_tokens` grows with the
+shared prefix while only the delta is billed as new input):
+
+```text
+responses: cache_miss provider=custom_provider_responses model=gpt-5.5 input_tokens=24871 output_tokens=147
+responses: cache_hit  provider=custom_provider_responses model=gpt-5.5 cached_tokens=24576 input_tokens=24994 output_tokens=43
+responses: cache_hit  provider=custom_provider_responses model=gpt-5.5 cached_tokens=24576 input_tokens=25059 output_tokens=24
+responses: cache_hit  provider=custom_provider_responses model=gpt-5.5 cached_tokens=26624 input_tokens=26946 output_tokens=69
+responses: cache_hit  provider=custom_provider_responses model=gpt-5.5 cached_tokens=53760 input_tokens=53913 output_tokens=50
+responses: cache_hit  provider=custom_provider_responses model=gpt-5.5 cached_tokens=67584 input_tokens=68153 output_tokens=452
+responses: cache_hit  provider=custom_provider_responses model=gpt-5.5 cached_tokens=69120 input_tokens=69514 output_tokens=48
+```
+
+Those numbers are workload/provider dependent, but the pattern is the point:
+once the stable prefix lands in upstream cache, later Claude Code turns stop
+paying full-history cost every request.
 
 <details>
-<summary><b>Screenshot — token/cost per request</b></summary>
+<summary><b>Screenshot — token/cost per request (click to expand)</b></summary>
 
 ![Token and cost usage per request, captured during the build run](Img/Token.png)
 
 </details>
 
-## Features
+## Highlights
 
-- Single zero-dependency Go binary.
-- Case-insensitive model routing with required `"*"` fallback.
-- Streaming translation for text, reasoning/thinking, tool calls, tool input deltas, stop reasons, and token counts where available.
-- Claude Code fast paths for quota probe, command prefix detection, title generation, suggestion mode, and filepath extraction.
-- Optional local handling for forced Anthropic `web_search` / `web_fetch` requests.
-- Minimal `/v1/models` list derived from configured routes.
-- `/debug/stats` for Responses session/cache counters, with optional file persistence.
+- **Single Go binary.** No third-party Go dependencies.
+- **Model-aware routing.** Case-insensitive substring match on incoming Claude
+  model names, plus required `"*"` fallback.
+- **Streaming translation.** Emits Anthropic SSE lifecycle with text, thinking,
+  tool use, tool input deltas, stop reasons, and token counts where available.
+- **Responses cache keying.** `openai_responses` sets `prompt_cache_key` from
+  Claude Code `metadata.user_id.session_id` when present.
+- **Claude Code fast paths.** Optional local shortcuts for quota probe, command
+  prefix detection, title generation, suggestion mode, and filepath extraction.
+- **Local web server tools.** Optional local handling for forced Anthropic
+  `web_search` / `web_fetch` requests.
+- **Debug stats.** `/debug/stats` exposes in-memory session cache counters.
 
 ## Install
 
-Download latest archive from [GitHub Releases](https://github.com/5nYqnHvk/RelayCode/releases). Assets include `relaycode`, `relaycode.example.yaml`, `README.md`, `LICENSE`, and matching `.sha256` files.
+### Prebuilt binary (recommended)
 
-Example Linux amd64 download:
+Grab the latest release from
+[GitHub Releases](https://github.com/5nYqnHvk/RelayCode/releases). Archives
+ship the `relaycode` binary, `relaycode.example.yaml`, `README.md`, and
+`LICENSE`. Per-archive `sha256` files are published alongside the assets.
+
+Linux / macOS:
 
 ```bash
-VERSION=v0.1.0
+VERSION=1.1.1
 curl -L -o relaycode.tar.gz \
   "https://github.com/5nYqnHvk/RelayCode/releases/download/${VERSION}/relaycode-${VERSION}-linux-amd64.tar.gz"
 tar -xzf relaycode.tar.gz
@@ -67,9 +122,9 @@ cp relaycode.example.yaml relaycode.yaml
 ./relaycode -config relaycode.yaml
 ```
 
-Linux/macOS use `.tar.gz`; Windows uses `.zip`.
+Windows: download the matching `*.zip`, unzip, then run `relaycode.exe`.
 
-Or build from source:
+### Build from source
 
 ```bash
 go build -o relaycode ./cmd/relaycode
@@ -82,7 +137,7 @@ go build -o relaycode ./cmd/relaycode
 cp relaycode.example.yaml relaycode.yaml
 ```
 
-Edit `relaycode.yaml`, set provider keys/models, then run:
+Edit `relaycode.yaml`, set provider keys, then run:
 
 ```bash
 export OPENAI_API_KEY=sk-...
@@ -97,7 +152,7 @@ export ANTHROPIC_AUTH_TOKEN=freecc   # match server.auth_token when configured
 claude
 ```
 
-If your Claude Code version expects `ANTHROPIC_API_KEY`, set it to the same token. If `server.auth_token` is empty, RelayCode accepts unauthenticated local requests.
+If `server.auth_token` is empty, RelayCode does not require client auth.
 
 Health check:
 
@@ -105,18 +160,61 @@ Health check:
 curl http://127.0.0.1:8080/health
 ```
 
+## How it works
+
+```text
+┌──────────────┐   Anthropic        ┌──────────────┐   OpenAI/Anthropic   ┌──────────────┐
+│ Claude Code  │ ─── /v1/messages ─▶│  RelayCode   │── chat/responses ───▶│  upstream    │
+│   client     │ ◀─── SSE stream ───│              │◀── SSE stream ──────│  provider    │
+└──────────────┘                    └──────────────┘                      └──────────────┘
+```
+
+Per request, RelayCode:
+
+1. Decodes Anthropic Messages request body.
+2. Runs enabled Claude Code fast-path optimizations when request shape matches.
+3. Resolves route from `routes[]` using incoming `model`.
+4. Handles forced local `web_search` / `web_fetch` when enabled.
+5. Builds provider-specific upstream request.
+6. Streams upstream SSE back as Anthropic SSE.
+7. Updates in-memory Responses session stats when usage data exists.
+
+## Repository layout
+
+```text
+cmd/relaycode/                  entrypoint, config flag, signal shutdown
+internal/anthropic/             Anthropic request/content types and helpers
+internal/config/                stdlib-only YAML subset loader
+internal/optim/                 Claude Code fast-path response shortcuts
+internal/provider/              adapter interfaces, HTTP/SSE helpers
+internal/provider/anthropic/    native Anthropic Messages passthrough adapter
+internal/provider/chat/         OpenAI Chat Completions adapter
+internal/provider/responses/    OpenAI Responses adapter
+internal/router/                model route resolver
+internal/server/                HTTP ingress, auth, /health, /debug/stats
+internal/session/               in-memory Responses cache/stat store
+internal/sse/                   Anthropic SSE writer/builder
+internal/streamparse/           thinking/tool-call text parsers
+internal/webtools/              local web_search/web_fetch implementation
+```
+
 ## Configuration
 
-Minimal shape:
+`relaycode.example.yaml`:
 
 ```yaml
 server:
   host: 127.0.0.1
   port: 8080
-  auth_token: ""
+  auth_token: ""   # when non-empty, clients must send matching x-api-key / Authorization
+
+  # Local Anthropic web_search/web_fetch handler. Disabled by default because it
+  # performs outbound HTTP from the proxy. Runs only when tool_choice forces it.
   enable_web_server_tools: false
   web_fetch_allowed_schemes: http,https
   web_fetch_allow_private_networks: false
+
+  # Claude Code fast-path optimizations. Disable individually for debugging.
   fast_prefix_detection: true
   enable_network_probe_mock: true
   enable_title_generation_skip: true
@@ -128,10 +226,10 @@ server:
 routes:
   - match: "opus"
     provider: openai_responses
-    model: gpt-5.5     # example only; use a model your upstream provides
+    model: gpt-5.5
   - match: "sonnet"
     provider: openai_responses
-    model: gpt-5.4     # example only; use a model your upstream provides
+    model: gpt-5.4
   - match: "*"
     provider: deepseek_chat
     model: deepseek-chat
@@ -146,7 +244,13 @@ providers:
     # max_retries: 2
     # max_concurrency: 4
     # codex_auth_path: /home/you/.codex/auth.json
+    # experimental_previous_response_id: false
     # experimental_passthrough_server_tools: true
+
+  openai_chat:
+    kind: openai_chat
+    base_url: https://api.openai.com/v1
+    api_key: "${OPENAI_API_KEY}"
 
   anthropic_native:
     kind: anthropic_messages
@@ -159,78 +263,114 @@ providers:
     api_key: "${DEEPSEEK_API_KEY}"
 ```
 
-Rules:
+Config rules:
 
-- `${VAR}` expands from environment at startup.
-- YAML parser supports nested maps, lists of maps, and scalar string/number/bool values. No anchors, flow style, or multiline strings.
-- `routes[].match` is case-insensitive substring match against incoming Claude model name. First match wins. `match: "*"` fallback is required.
-- `providers.<name>.kind` must be `openai_chat`, `openai_responses`, or `anthropic_messages`.
-- Provider adapters are created lazily. Missing API key fails only when that provider is used.
-- `auth_token` accepts `x-api-key: <token>`, `Authorization: Bearer <token>`, or raw `Authorization: <token>`.
+- `${VAR}` values expand from process environment at startup.
+- YAML parser supports simple nested maps, lists of maps, and scalar values.
+  No anchors, flow style, or multiline strings.
+- `routes[].match` is case-insensitive substring match against incoming Claude
+  model name. First match wins.
+- Fallback route with `match: "*"` is required.
+- `providers.<name>.kind` must be `openai_chat`, `openai_responses`, or
+  `anthropic_messages`.
+- Provider adapters are created lazily on first routed request. Missing API key
+  only fails when that provider is used.
+- `auth_token`, when non-empty, accepts either `x-api-key: <token>`,
+  `Authorization: Bearer <token>`, or raw `Authorization: <token>`.
 
-See `relaycode.example.yaml` for full commented config.
-
-## Provider behavior
+## Providers
 
 ### `openai_responses`
 
-- Sends `model`, `input`, `stream: true`, `instructions`, `max_output_tokens`, `top_p`, tools, function-call outputs, `tool_choice`, `parallel_tool_calls: false`, and `store: false`.
-- Omits `temperature` because current Responses targets used by RelayCode reject or ignore it inconsistently.
+Translates Anthropic messages to OpenAI Responses `input[]` items.
+
+Behavior:
+
+- Sends `model`, `input`, `stream: true`, and `instructions` from Anthropic
+  system text.
+- Maps `max_tokens` to `max_output_tokens`.
+- Forwards `top_p`, tools, and function-call outputs.
+- Omits `temperature` because current Responses targets used by RelayCode reject
+  or ignore it inconsistently.
+- Always sends `tool_choice`, `parallel_tool_calls: false`, and `store: false`.
 - Sets `prompt_cache_key` from Claude Code session id when available.
-- Adds `include: ["reasoning.encrypted_content"]` when reasoning is requested, matching Codex Responses requests.
-- Adds a short tool-use bridge instruction for OpenAI models so tool-work requests do not end after a text preamble.
+- Adds `include: ["reasoning.encrypted_content"]` when reasoning is requested.
 - Maps Anthropic `tool_choice: {"type":"any"}` to OpenAI `required`.
-- Drops replayed raw Anthropic thinking blocks and strips unsupported server-tool declarations unless `experimental_passthrough_server_tools` is enabled.
-- HTTP Responses follows Codex: full input every turn with `prompt_cache_key`; `previous_response_id` is left off unless `experimental_previous_response_id` is explicitly enabled for a backend that supports HTTP continuation.
-- Schema-less Anthropic `custom` tools are sent as Responses `custom` tools with text input; schema-backed tools remain function tools.
+- Drops replayed raw Anthropic thinking blocks because Responses API does not
+  accept them.
 - Rejects user image blocks.
-- `codex_auth_path` can read local Codex auth JSON and use `tokens.access_token` / `tokens.account_id` for compatible OpenAI endpoints.
+
+Optional knobs:
+
+- `codex_auth_path`: reads local Codex auth JSON and uses
+  `tokens.access_token` as `Authorization: Bearer ...`; also forwards
+  `tokens.account_id` as `ChatGPT-Account-ID` when present. Useful when
+  targeting OpenAI endpoints that expect Codex-style ChatGPT auth instead of
+  normal API key auth.
+- `experimental_previous_response_id`: enables HTTP `previous_response_id`
+  chaining for backends that support it. Default stays off for Codex-style full
+  replay with `prompt_cache_key`.
+- `experimental_passthrough_server_tools`: passes Anthropic server tool
+  declarations upstream instead of stripping unsupported server-tool entries.
+  Keep off unless upstream provider understands those tool shapes.
 
 ### `openai_chat`
 
-- Sends system text as `role: system`.
-- Converts client tools to OpenAI function tools.
-- Streams text, reasoning content, and tool-call arguments back to Anthropic SSE.
-- Sanitizes tool parameter property named `type`, then restores argument key on streamed tool input.
+Translates Anthropic messages to OpenAI Chat Completions `messages[]`.
+
+Behavior:
+
+- Sends system text as `role: system` message.
+- Converts regular client tools to OpenAI function tools.
+- Streams chat text, reasoning content, and tool-call arguments back to
+  Anthropic SSE.
+- Sanitizes tool parameter property named `type` to avoid provider schema bugs,
+  then restores argument key on streamed tool input.
 - Rejects user image blocks.
-- Cannot use listed Anthropic `web_search` / `web_fetch` server tools unless local web server tools are enabled.
 
 ### `anthropic_messages`
 
-- Passes request through to upstream `/v1/messages` with routed model replacement.
+Passes Anthropic request through to upstream `/v1/messages` with model replaced
+by routed upstream model.
+
+Behavior:
+
 - Sends `x-api-key` and `anthropic-version: 2023-06-01`.
-- Forces `stream: true` and adds `max_tokens: 4096` when missing or zero.
+- Forces `stream: true`.
+- Adds `max_tokens: 4096` when missing or zero.
 - Pipes upstream Anthropic SSE through with minor policy transforms.
 
 ## Tool compatibility
 
 | Claude Code feature | Status | Notes |
 |---|---|---|
-| Client tools (`Bash`, `Read`, `Write`, `Edit`, etc.) | Works | Relayed as function-style tool calls/results. |
+| Client tools (`Bash`, `Read`, `Write`, `Edit`, etc.) | Works | RelayCode relays function-style tool calls/results. |
 | Custom function tools | Works | Converted to provider function tools. |
 | Tool argument streaming | Works | Mapped to Anthropic `input_json_delta`. |
 | Thinking/reasoning deltas | Works | Chat reasoning and Responses reasoning events map to `thinking_delta`. |
-| Local `web_search` / `web_fetch` | Optional | Requires `server.enable_web_server_tools: true` and forced Anthropic server-tool choice. |
-| Provider-side server tools | Experimental | `openai_responses` only; enable `experimental_passthrough_server_tools` when upstream supports those tool shapes. Without passthrough, replayed server/MCP history is degraded to text context. |
-| Responses custom/freeform tools | Works | Schema-less `custom` tools use Responses `custom` declarations; streamed freeform input is wrapped back into Anthropic tool input. |
-| Images | Native Anthropic only | OpenAI adapters reject user image blocks. |
-
-Local web tools are lightweight substitutes, not Anthropic-equivalent browsing: `web_search` uses DuckDuckGo Lite and returns at most 5 results; `web_fetch` follows at most 5 redirects, reads at most 1 MiB, and returns at most 20,000 chars.
+| Local `web_search` / `web_fetch` | Optional | Requires `server.enable_web_server_tools: true` and forced Anthropic server tool choice. |
+| Provider-side server tools | Experimental | Use `experimental_passthrough_server_tools` only with compatible upstreams. |
+| Images | Native Anthropic only | OpenAI adapters reject user image blocks. Route vision models through `anthropic_messages`. |
+| MCP/server-tool replay blocks | Stripped by default | Prevents unsupported opaque blocks from breaking OpenAI-compatible upstreams. |
 
 ## Observability
+
+Stats endpoint:
 
 ```bash
 curl -sS http://127.0.0.1:8080/debug/stats \
   -H "x-api-key: freecc" | jq .
 ```
 
-Example response:
+Response shape:
 
 ```json
 {
   "counters": {
     "hits": 0,
     "misses": 0,
+    "forced_replays": 0,
+    "expired_invalid": 0,
     "input_tokens": 0,
     "output_tokens": 0
   },
@@ -248,40 +388,89 @@ Example response:
 }
 ```
 
-The endpoint also includes counters such as `forced_replays` and `expired_invalid` when continuation fallback or invalidation happens.
-
 Debug logging:
 
-- `RELAYCODE_DEBUG_REQUEST=1`: logs raw incoming `/v1/messages` JSON. Use only locally; this can include prompt text.
-- `server.log_request_snapshots: true` or `RELAYCODE_LOG_REQUEST_SNAPSHOTS=1`: logs scrubbed request-shape snapshots without raw prompt text.
+- `RELAYCODE_DEBUG_REQUEST=1`: logs raw incoming `/v1/messages` JSON. Use only
+  locally; this can include prompt text.
+- `server.log_request_snapshots: true` or `RELAYCODE_LOG_REQUEST_SNAPSHOTS=1`:
+  logs scrubbed request shape snapshots without raw prompt text.
 
-## Security and limits
+## Limitations
 
-- Default bind is localhost: `server.host: 127.0.0.1`.
-- Set `server.auth_token` before exposing RelayCode beyond localhost.
-- `/v1/messages` and `/debug/stats` require auth when `auth_token` is set. `/health` is always unauthenticated on the bound interface.
-- RelayCode serves plain HTTP. Use a reverse proxy for TLS outside localhost.
-- No prompt logging by default. `RELAYCODE_DEBUG_REQUEST=1` prints raw prompts.
-- Session/cache metadata is in memory by default; set `server.responses_session_store_path` to persist metadata across restarts.
-- Responses cache reuse depends on upstream `prompt_cache_key`; persisted `previous_response_id` metadata still falls back to full replay if upstream rejects it.
-- Retries apply only to transport errors, HTTP 429, and HTTP 5xx before stream acceptance. Mid-stream provider failures return Anthropic SSE errors.
+- Session store is in memory by default. Set `server.responses_session_store_path`
+  to persist Responses session/cache metadata JSON across restarts.
+- Responses cache reuse relies on upstream prompt caching via `prompt_cache_key`.
+  Optional HTTP `previous_response_id` chaining is experimental; WebSocket
+  continuation is not implemented.
+- OpenAI adapters reject user image blocks.
+- Local web tools run only for forced Anthropic web server tool requests.
+- Retry only applies to transport errors, HTTP 429, and HTTP 5xx before a stream
+  is accepted; mid-stream provider failures are returned as Anthropic SSE errors.
+
+## Security
+
+- **Bind to localhost by default.** `server.host: 127.0.0.1` in
+  `relaycode.example.yaml`. Bind to a public interface only when needed.
+- **Set `server.auth_token`** before exposing RelayCode beyond localhost.
+  Without it, any local process can reach the proxy.
+- **No TLS termination.** RelayCode serves plain HTTP. Terminate TLS at a
+  reverse proxy (Caddy, nginx, Cloudflare Tunnel) when not on localhost.
+- **No prompt logging by default.** `RELAYCODE_DEBUG_REQUEST=1` prints raw
+  request bodies; use only locally for debugging. `log_request_snapshots`
+  prints shape-only snapshots without raw prompt text.
+- **Provider keys via env.** Prefer `${OPENAI_API_KEY}` / `${DEEPSEEK_API_KEY}`
+  over pasting keys into `relaycode.yaml`.
+- **Session store is in memory by default.** Set
+  `server.responses_session_store_path` if you want Responses session/cache
+  metadata on disk.
+
+## FAQ
+
+**Why route through Responses instead of Chat Completions?**
+Responses accepts `prompt_cache_key`, so multi-turn Claude Code sessions reuse
+the shared prefix upstream. Chat Completions works but has no session-level
+cache handle.
+
+**Can I keep using Anthropic directly?**
+Yes. Configure an `anthropic_messages` provider and route whichever model
+substring you want through it. RelayCode just forwards the request.
+
+**How do I mix providers?**
+Put multiple entries in `routes[]`. First match (case-insensitive substring on
+incoming model) wins. Example: `opus` → OpenAI Responses, `haiku` → DeepSeek
+chat, `*` → fallback.
+
+**Does it support image / vision?**
+Only through the native Anthropic route. OpenAI-compatible adapters reject
+user image blocks.
+
+**Will Claude Code know it's being proxied?**
+No. RelayCode speaks the Anthropic Messages API; Claude Code treats it as a
+normal Anthropic endpoint.
 
 ## Troubleshooting
 
-- **`prompt_cache=miss` every turn:** Claude Code may not be sending `metadata.user_id.session_id`; prefix reuse falls back to instructions/tools fingerprint. `full_replay` is expected on HTTP Responses and only means the full input was sent.
-- **`401`/`403` from upstream:** API key missing or wrong. Check env var referenced in `relaycode.yaml`.
-- **`429` from upstream:** set `providers.<name>.max_retries` and `max_concurrency`.
-- **Long requests time out:** raise `providers.<name>.http_timeout_seconds`.
-- **`image user blocks not supported`:** route vision turns through `anthropic_messages`.
-- **Forced `web_search` / `web_fetch` returns 400:** enable `server.enable_web_server_tools: true`.
+- **`cache_miss` every turn.** Client is not sending
+  `metadata.user_id.session_id`. Either upgrade the Claude Code client, or
+  expect prefix reuse to fall back to instructions+tools fingerprint only.
+- **`401`/`403` from upstream.** API key is missing or wrong. Check the env
+  var referenced in `relaycode.yaml`.
+- **`429` from upstream.** Set `providers.<name>.max_retries` and
+  `max_concurrency` to smooth spikes.
+- **Long requests time out.** Bump `providers.<name>.http_timeout_seconds`.
+- **"image user blocks not supported".** Route vision turns through an
+  `anthropic_messages` provider instead of OpenAI adapters.
+- **Forced `web_search` / `web_fetch` returns 400.** Enable
+  `server.enable_web_server_tools: true`. Default is off because the proxy
+  makes outbound HTTP.
 
 ## Development
 
 ```bash
-gofmt -w .
-go vet ./...
 go test ./...
+go vet ./...
 go build -o relaycode ./cmd/relaycode
+./relaycode -config relaycode.yaml
 ```
 
 No external Go dependencies. Tests use standard `go test`.
