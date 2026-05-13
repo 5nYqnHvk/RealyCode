@@ -18,21 +18,35 @@ func TestRegistryRejectsBadInputSchema(t *testing.T) {
 	}
 }
 
-func TestRegistryRejectsUnsupportedSchemaKeyword(t *testing.T) {
-	for _, schema := range []string{
-		`{"type":"object","properties":{"file_path":{"type":"string","contentEncoding":"base64"}},"required":["file_path"]}`,
-		`{"type":"object","propertyNames":{"pattern":"^[a-z]+$"}}`,
-		`{"type":"object","patternProperties":{"^x-":{"type":"string"}}}`,
-		`{"$ref":"#/$defs/read","$defs":{"read":{"type":"object"}}}`,
-	} {
-		registry := NewRegistry([]anthropic.Tool{{
-			Name:        "Read",
-			InputSchema: json.RawMessage(schema),
-		}}, false, nil)
+func TestRegistryIgnoresUnsupportedSchemaKeywords(t *testing.T) {
+	registry := NewRegistry([]anthropic.Tool{{
+		Name: "TaskCreate",
+		InputSchema: json.RawMessage(`{
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"subject": {"type": "string", "contentEncoding": "utf-8"},
+				"description": {"type": "string"},
+				"metadata": {
+					"type": "object",
+					"propertyNames": {"pattern": "^[a-z]+$"},
+					"additionalProperties": true
+				}
+			},
+			"required": ["subject", "description"],
+			"additionalProperties": false,
+			"$defs": {"unused": {"type": "string"}}
+		}`),
+	}}, false, nil)
 
-		if _, ok := registry.Validate("Read", `{"file_path":"/tmp/x"}`); ok {
-			t.Fatalf("unsupported schema keyword validated: %s", schema)
-		}
+	if _, ok := registry.Validate("TaskCreate", `{"subject":"Fix tools","description":"Keep known tool calls alive"}`); !ok {
+		t.Fatal("valid args rejected because schema contains unsupported annotations")
+	}
+	if _, ok := registry.Validate("TaskCreate", `{"subject":"Fix tools"}`); ok {
+		t.Fatal("missing required field validated")
+	}
+	if _, ok := registry.Validate("TaskCreate", `{"subject":"Fix tools","description":"Keep known tool calls alive","extra":true}`); ok {
+		t.Fatal("additional property validated")
 	}
 }
 
