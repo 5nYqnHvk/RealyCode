@@ -178,4 +178,7 @@ func TestRequestPreservesBetaAndExtraBodyFields(t *testing.T) {
 			t.Fatalf("marshaled request missing %s: %s", want, raw)
 		}
 	}
+	if got := req.UnsupportedOpenAIFields(); !reflect.DeepEqual(got, []string{"speed"}) {
+		t.Fatalf("unsupported openai fields = %+v", got)
+	}
 }

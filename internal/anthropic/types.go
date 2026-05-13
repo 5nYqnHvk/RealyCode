@@ -5,6 +5,7 @@ package anthropic
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -26,7 +27,8 @@ type Request struct {
 	Metadata      json.RawMessage `json:"metadata,omitempty"`
 	Betas         []string        `json:"betas,omitempty"`
 	// ContextManagement and ExtraFields keep Claude Code beta/body params intact
-	// for native Anthropic egress. OpenAI adapters intentionally ignore them.
+	// for native Anthropic egress. OpenAI adapters ignore context_management and
+	// reject unknown extra request fields.
 	ContextManagement json.RawMessage            `json:"context_management,omitempty"`
 	ExtraFields       map[string]json.RawMessage `json:"-"`
 }
@@ -193,13 +195,11 @@ func (r *Request) UnsupportedOpenAIFields() []string {
 	if r == nil {
 		return nil
 	}
-	var fields []string
-	if len(r.ContextManagement) > 0 {
-		fields = append(fields, "context_management")
-	}
+	fields := make([]string, 0, len(r.ExtraFields))
 	for key := range r.ExtraFields {
 		fields = append(fields, key)
 	}
+	sort.Strings(fields)
 	return fields
 }
 
