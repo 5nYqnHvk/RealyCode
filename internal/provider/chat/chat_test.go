@@ -138,6 +138,54 @@ func TestBuildRequestPassesServerToolsWhenExperimental(t *testing.T) {
 	}
 }
 
+func TestBuildRequestMapsImageBlocks(t *testing.T) {
+	req := &anthropic.Request{Messages: []anthropic.Message{{Role: "user", Content: anthropic.Content{Blocks: []anthropic.Block{
+		{Type: "text", Text: "look"},
+		{Type: "image", Source: &anthropic.ImageSource{Type: "base64", MediaType: "image/png", Data: "AAA"}},
+		{Type: "text", Text: "now"},
+	}}}}}
+
+	body, err := buildRequest(req, "gpt", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages := body["messages"].([]openaiMessage)
+	if len(messages) != 1 {
+		t.Fatalf("messages = %+v", messages)
+	}
+	parts := messages[0].Content.([]openaiContentPart)
+	if len(parts) != 3 || parts[0].Text != "look" || parts[1].Type != "image_url" || parts[1].ImageURL.URL != "data:image/png;base64,AAA" || parts[2].Text != "now" {
+		t.Fatalf("parts = %+v", parts)
+	}
+}
+
+func TestBuildRequestFlushesImageMessageBeforeToolResult(t *testing.T) {
+	req := &anthropic.Request{Messages: []anthropic.Message{
+		{Role: "assistant", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "tool_use", ID: "call_1", Name: "Read", Input: json.RawMessage(`{"file_path":"x"}`)}}}},
+		{Role: "user", Content: anthropic.Content{Blocks: []anthropic.Block{
+			{Type: "image", Source: &anthropic.ImageSource{Type: "base64", MediaType: "image/jpeg", Data: "BBB"}},
+			{Type: "tool_result", ToolUseID: "call_1", Content: json.RawMessage(`"ok"`)},
+		}}},
+	}}
+
+	body, err := buildRequest(req, "gpt", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages := body["messages"].([]openaiMessage)
+	if len(messages) != 3 || messages[0].Role != "assistant" || messages[1].Role != "user" || messages[2].Role != "tool" || messages[2].Content != "ok" {
+		t.Fatalf("messages = %+v", messages)
+	}
+}
+
+func TestBuildRequestRejectsInvalidImageBlock(t *testing.T) {
+	req := &anthropic.Request{Messages: []anthropic.Message{{Role: "user", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "image", Source: &anthropic.ImageSource{Type: "base64", MediaType: "image/bmp", Data: "AAA"}}}}}}}
+	_, err := buildRequest(req, "gpt", false)
+	if err == nil || !strings.Contains(err.Error(), "unsupported image media_type") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestBuildRequestCompactsToolResultsWhenEnabled(t *testing.T) {
 	longOutput := strings.Repeat("line\n", 300)
 	raw, err := json.Marshal(longOutput)

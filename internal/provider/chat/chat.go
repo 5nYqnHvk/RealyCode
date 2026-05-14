@@ -229,6 +229,16 @@ type openaiMessage struct {
 	ToolCalls  []openaiToolRef `json:"tool_calls,omitempty"`
 }
 
+type openaiContentPart struct {
+	Type     string              `json:"type"`
+	Text     string              `json:"text,omitempty"`
+	ImageURL *openaiImageURLPart `json:"image_url,omitempty"`
+}
+
+type openaiImageURLPart struct {
+	URL string `json:"url"`
+}
+
 type openaiToolRef struct {
 	ID       string          `json:"id"`
 	Type     string          `json:"type"`
@@ -430,17 +440,54 @@ func convertMessages(r *anthropic.Request, passthroughServerTools, compactToolRe
 func convertUserBlocks(blocks []anthropic.Block, compactToolResults bool) ([]openaiMessage, error) {
 	var out []openaiMessage
 	var textParts []string
-	flush := func() {
-		if len(textParts) == 0 {
+	var contentParts []openaiContentPart
+	usingParts := false
+
+	appendText := func(text string) {
+		if text == "" {
 			return
 		}
-		out = append(out, openaiMessage{Role: "user", Content: strings.Join(textParts, "\n")})
+		if usingParts {
+			contentParts = append(contentParts, openaiContentPart{Type: "text", Text: text})
+			return
+		}
+		textParts = append(textParts, text)
+	}
+	ensureParts := func() {
+		if usingParts {
+			return
+		}
+		usingParts = true
+		for _, text := range textParts {
+			contentParts = append(contentParts, openaiContentPart{Type: "text", Text: text})
+		}
 		textParts = nil
+	}
+	flush := func() {
+		if usingParts {
+			if len(contentParts) > 0 {
+				out = append(out, openaiMessage{Role: "user", Content: contentParts})
+			}
+			contentParts = nil
+			usingParts = false
+			return
+		}
+		if len(textParts) > 0 {
+			out = append(out, openaiMessage{Role: "user", Content: strings.Join(textParts, "\n")})
+			textParts = nil
+		}
 	}
 	for _, b := range blocks {
 		switch b.Type {
 		case "text":
-			textParts = append(textParts, b.Text)
+			appendText(b.Text)
+		case "image":
+			imageURL, err := b.ImageDataURL()
+			if err != nil {
+				return nil, fmt.Errorf("image user block: %w", err)
+			}
+			ensureParts()
+			contentParts = append(contentParts, openaiContentPart{Type: "image_url", ImageURL: &openaiImageURLPart{URL: imageURL}})
 		case "tool_result", "web_search_tool_result", "web_fetch_tool_result", "code_execution_tool_result", "computer_use_tool_result", "mcp_tool_result":
 			if b.ToolUseID == "" {
 				continue
@@ -455,8 +502,6 @@ func convertUserBlocks(blocks []anthropic.Block, compactToolResults bool) ([]ope
 				ToolCallID: b.ToolUseID,
 				Content:    text,
 			})
-		case "image":
-			return nil, fmt.Errorf("image user blocks not supported by openai_chat adapter")
 		default:
 			if anthropic.IsServerToolBlock(b) {
 				// Server-tool records from a prior turn are opaque to the
