@@ -49,9 +49,11 @@ requests can replay tens of thousands of input tokens.
 
 RelayCode was built to test a different shape: keep Claude Code as the local
 agent UI, but route model calls through a Responses-style backend with upstream
-prompt caching. In one end-to-end development run, RelayCode was built from
-scratch to working state in about **8 hours**, using about **$150** of model spend
-while running Claude Code through RelayCode with a **GPT-5.5** route.
+prompt caching.
+
+During development, RelayCode itself was built while running Claude Code
+through a GPT-5.5 Responses route. Total model spend for that end-to-end build
+and compatibility pass was roughly under $150.
 
 Observed token/cost behavior from that run:
 
