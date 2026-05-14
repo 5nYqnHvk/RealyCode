@@ -61,7 +61,7 @@ jobs:
         run: |
           mkdir -p dist
           name="relaycode-${{ steps.tag.outputs.ref }}-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}"
-          go build -trimpath -ldflags="-s -w" -o "dist/${name}" ./cmd/relaycode
+          go build -trimpath -ldflags="-s -w -X github.com/5nYqnHvk/RelayCode/internal/version.Version=${{ steps.tag.outputs.ref }}" -o "dist/${name}" ./cmd/relaycode
 
       - name: Package archive
         id: pkg

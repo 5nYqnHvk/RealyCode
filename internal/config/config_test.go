@@ -44,6 +44,9 @@ func TestLoadParsesConfigAndExpandsEnv(t *testing.T) {
   web_fetch_allowed_schemes: https
   web_fetch_allow_private_networks: true
   compact_tool_results: true
+  enable_update_notification: true
+  update_check_url: https://updates.example.test/latest
+  update_check_timeout_seconds: 9
   responses_session_store_path: "${TEST_RELAYCODE_STORE}"
 
 routes:
@@ -80,6 +83,9 @@ providers:
 		cfg.Server.WebFetchAllowedSchemes != "https" ||
 		!cfg.Server.WebFetchAllowPrivateNetworks ||
 		!cfg.Server.CompactToolResults ||
+		!cfg.Server.EnableUpdateNotification ||
+		cfg.Server.UpdateCheckURL != "https://updates.example.test/latest" ||
+		cfg.Server.UpdateCheckTimeoutSeconds != 9 ||
 		cfg.Server.ResponsesSessionStorePath != "/tmp/relaycode-sessions.json" {
 		t.Fatalf("Server = %+v", cfg.Server)
 	}
@@ -97,6 +103,30 @@ providers:
 	}
 	if cfg.Providers["openai_chat"].ExperimentalPassthroughServerTools {
 		t.Fatalf("openai_chat provider = %+v, want experimental passthrough disabled by default", cfg.Providers["openai_chat"])
+	}
+}
+
+func TestLoadUpdateCheckDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "relaycode.yaml")
+	body := `routes:
+  - match: "*"
+    provider: p
+    model: gpt
+providers:
+  p:
+    kind: openai_chat
+    base_url: https://api.example.com/v1
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server.EnableUpdateNotification || cfg.Server.UpdateCheckURL != "https://api.github.com/repos/5nYqnHvk/RelayCode/releases/latest" || cfg.Server.UpdateCheckTimeoutSeconds != 3 {
+		t.Fatalf("Server = %+v", cfg.Server)
 	}
 }
 

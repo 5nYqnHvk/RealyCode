@@ -32,6 +32,9 @@ type ServerConfig struct {
 	EnableFilepathExtractionMock bool
 	LogRequestSnapshots          bool
 	CompactToolResults           bool
+	EnableUpdateNotification     bool
+	UpdateCheckURL               string
+	UpdateCheckTimeoutSeconds    int
 	ResponsesSessionStorePath    string
 }
 
@@ -91,6 +94,8 @@ func fromDoc(doc yamlMap) (*Config, error) {
 			WebFetchAllowedSchemes:       "http,https",
 			FastPrefixDetection:          true,
 			EnableNetworkProbeMock:       true,
+			UpdateCheckURL:               "https://api.github.com/repos/5nYqnHvk/RelayCode/releases/latest",
+			UpdateCheckTimeoutSeconds:    3,
 			EnableTitleGenerationSkip:    true,
 			EnableSuggestionModeSkip:     true,
 			EnableFilepathExtractionMock: true,
@@ -120,6 +125,13 @@ func fromDoc(doc yamlMap) (*Config, error) {
 		cfg.Server.EnableFilepathExtractionMock = boolDefault(srv, "enable_filepath_extraction_mock", cfg.Server.EnableFilepathExtractionMock)
 		cfg.Server.LogRequestSnapshots = boolAt(srv, "log_request_snapshots")
 		cfg.Server.CompactToolResults = boolAt(srv, "compact_tool_results")
+		cfg.Server.EnableUpdateNotification = boolAt(srv, "enable_update_notification")
+		if v, ok := srv["update_check_url"].(string); ok && strings.TrimSpace(v) != "" {
+			cfg.Server.UpdateCheckURL = expandEnv(v)
+		}
+		if v, ok := srv["update_check_timeout_seconds"].(int); ok && v > 0 {
+			cfg.Server.UpdateCheckTimeoutSeconds = v
+		}
 		if v, ok := srv["responses_session_store_path"].(string); ok {
 			cfg.Server.ResponsesSessionStorePath = expandEnv(v)
 		}

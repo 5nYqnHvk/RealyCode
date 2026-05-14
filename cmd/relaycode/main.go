@@ -15,6 +15,7 @@ import (
 
 	"github.com/5nYqnHvk/RelayCode/internal/config"
 	"github.com/5nYqnHvk/RelayCode/internal/server"
+	"github.com/5nYqnHvk/RelayCode/internal/updatecheck"
 )
 
 var errConfigGeneratedExit = errors.New("config generated; exiting")
@@ -75,6 +76,7 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	updatecheck.MaybeNotify(ctx, cfg.Server)
 
 	log.Printf("relaycode listening on %s (routes=%d)", srv.Addr(), len(cfg.Routes))
 	if err := srv.Run(ctx); err != nil {

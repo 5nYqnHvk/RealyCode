@@ -20,6 +20,9 @@ server:
   enable_filepath_extraction_mock: true
   log_request_snapshots: false   # safe shape-only request logs; no raw prompt text
   compact_tool_results: false    # compact long tool output before replaying upstream
+  enable_update_notification: false # check GitHub latest release tag on startup
+  # update_check_url: https://api.github.com/repos/5nYqnHvk/RelayCode/releases/latest
+  # update_check_timeout_seconds: 3
   responses_session_store_path: "" # optional durable Responses session/cache metadata JSON
 
 # Incoming Claude model name -> backend route.

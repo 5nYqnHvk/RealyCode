@@ -224,6 +224,10 @@ server:
   enable_suggestion_mode_skip: true
   enable_filepath_extraction_mock: true
   log_request_snapshots: false
+  compact_tool_results: false
+  enable_update_notification: false
+  # update_check_url: https://api.github.com/repos/5nYqnHvk/RelayCode/releases/latest
+  # update_check_timeout_seconds: 3
   responses_session_store_path: ""  # optional durable Responses session/cache metadata JSON
 
 routes:
@@ -400,6 +404,11 @@ Debug logging:
 - `server.compact_tool_results: true`: sends compacted long tool/Bash outputs to
   OpenAI-compatible upstreams while keeping short outputs unchanged. Raw capture
   files remain full when `RELAYCODE_CAPTURE_DIR` is enabled.
+- `server.enable_update_notification: true`: checks the latest GitHub Release tag
+  once at startup and logs when a newer release exists. Source builds use version
+  `dev` and skip update checks; release builds get their tag injected at build time.
+- `server.update_check_url` and `server.update_check_timeout_seconds`: override
+  the release endpoint and timeout (defaults: GitHub latest release API, 3s).
 - `RELAYCODE_CAPTURE_DIR=/tmp/relaycode-capture`: writes one directory per
   request with `incoming_anthropic.json`, per-call `upstream/*/request.json`, and
   split SSE frames under `upstream/*/events/` and `downstream_events/`. Use only
@@ -430,6 +439,8 @@ Debug logging:
   prints shape-only snapshots without raw prompt text. `compact_tool_results`
   can reduce long Bash/tool replay sent upstream. `RELAYCODE_CAPTURE_DIR` writes
   raw request/tool content for local fixture capture only.
+- **No outbound update checks by default.** `enable_update_notification` must be
+  set explicitly before RelayCode calls the GitHub Release API.
 - **Provider keys via env.** Prefer `${OPENAI_API_KEY}` / `${DEEPSEEK_API_KEY}`
   over pasting keys into `relaycode.yaml`.
 - **Session store is in memory by default.** Set
