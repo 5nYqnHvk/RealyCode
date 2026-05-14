@@ -611,6 +611,54 @@ func TestStreamDoesNotUsePreviousResponseIDByDefault(t *testing.T) {
 	}
 }
 
+func TestBuildRequestMapsImageBlocks(t *testing.T) {
+	req := &anthropic.Request{Messages: []anthropic.Message{{Role: "user", Content: anthropic.Content{Blocks: []anthropic.Block{
+		{Type: "text", Text: "look"},
+		{Type: "image", Source: &anthropic.ImageSource{Type: "base64", MediaType: "image/webp", Data: "AAA"}},
+		{Type: "text", Text: "now"},
+	}}}}}
+
+	body, err := buildRequest(req, "gpt", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := body["input"].([]inputItem)
+	if len(items) != 1 {
+		t.Fatalf("input = %+v", items)
+	}
+	parts := items[0].Content
+	if len(parts) != 3 || parts[0].Text != "look" || parts[1].Type != "input_image" || parts[1].ImageURL != "data:image/webp;base64,AAA" || parts[2].Text != "now" {
+		t.Fatalf("parts = %+v", parts)
+	}
+}
+
+func TestBuildRequestFlushesImageMessageBeforeToolResult(t *testing.T) {
+	req := &anthropic.Request{Messages: []anthropic.Message{
+		{Role: "assistant", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "tool_use", ID: "call_1", Name: "Read", Input: json.RawMessage(`{"file_path":"x"}`)}}}},
+		{Role: "user", Content: anthropic.Content{Blocks: []anthropic.Block{
+			{Type: "image", Source: &anthropic.ImageSource{Type: "base64", MediaType: "image/gif", Data: "BBB"}},
+			{Type: "tool_result", ToolUseID: "call_1", Content: json.RawMessage(`"ok"`)},
+		}}},
+	}}
+
+	body, err := buildRequest(req, "gpt", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := body["input"].([]inputItem)
+	if len(items) != 3 || items[0].Type != "function_call" || items[1].Type != "message" || items[2].Type != "function_call_output" || items[2].Output != "ok" {
+		t.Fatalf("input = %+v", items)
+	}
+}
+
+func TestBuildRequestRejectsInvalidImageBlock(t *testing.T) {
+	req := &anthropic.Request{Messages: []anthropic.Message{{Role: "user", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "image", Source: &anthropic.ImageSource{Type: "url", MediaType: "image/png", Data: "AAA"}}}}}}}
+	_, err := buildRequest(req, "gpt", false)
+	if err == nil || !strings.Contains(err.Error(), "unsupported image source type") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestBuildRequestCompactsToolResultsWhenEnabled(t *testing.T) {
 	longOutput := strings.Repeat("line\n", 300)
 	raw, err := json.Marshal(longOutput)

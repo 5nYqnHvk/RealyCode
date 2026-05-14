@@ -570,8 +570,9 @@ type inputItem struct {
 }
 
 type inputContentPart struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	ImageURL string `json:"image_url,omitempty"`
 }
 
 type toolDecl struct {
@@ -828,6 +829,12 @@ func convertMessagesToItems(msgs []anthropic.Message, passthroughServerTools boo
 				switch b.Type {
 				case "text":
 					msg.Content = append(msg.Content, inputContentPart{Type: "input_text", Text: b.Text})
+				case "image":
+					imageURL, err := b.ImageDataURL()
+					if err != nil {
+						return nil, fmt.Errorf("image user block: %w", err)
+					}
+					msg.Content = append(msg.Content, inputContentPart{Type: "input_image", ImageURL: imageURL})
 				case "tool_result", "web_search_tool_result", "web_fetch_tool_result", "code_execution_tool_result", "computer_use_tool_result", "mcp_tool_result":
 					if b.Type == "web_search_tool_result" {
 						continue
@@ -852,8 +859,6 @@ func convertMessagesToItems(msgs []anthropic.Message, passthroughServerTools boo
 						CallID: b.ToolUseID,
 						Output: text,
 					})
-				case "image":
-					return nil, fmt.Errorf("image user blocks not supported by openai_responses adapter")
 				}
 			}
 			if len(msg.Content) > 0 {
