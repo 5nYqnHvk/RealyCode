@@ -182,3 +182,60 @@ func TestRequestPreservesBetaAndExtraBodyFields(t *testing.T) {
 		t.Fatalf("unsupported openai fields = %+v", got)
 	}
 }
+
+func TestReasoningEffortMapsValues(t *testing.T) {
+	for _, tc := range []struct {
+		effort any
+		want   string
+		ok     bool
+	}{
+		{"HIGH", "high", true},
+		{"max", "xhigh", true},
+		{"minimal", "minimal", true},
+		{"unknown", "", false},
+		{float64(50), "low", true},
+		{float64(85), "medium", true},
+		{float64(100), "high", true},
+		{float64(101), "xhigh", true},
+		{25, "low", true},
+		{90, "high", true},
+	} {
+		req := &Request{OutputConfig: &OutputConfig{Effort: tc.effort}}
+		got, ok := req.ReasoningEffort()
+		if got != tc.want || ok != tc.ok {
+			t.Fatalf("ReasoningEffort(%#v) = %q,%v want %q,%v", tc.effort, got, ok, tc.want, tc.ok)
+		}
+	}
+	if got, ok := (*Request)(nil).ReasoningEffort(); got != "" || ok {
+		t.Fatalf("nil ReasoningEffort = %q,%v", got, ok)
+	}
+}
+
+func TestNormalizePreviousResponseTailPreservesToolResultsAndDegradesServerTools(t *testing.T) {
+	msgs := []Message{
+		{Role: "assistant", Content: Content{Blocks: []Block{{Type: "thinking", Thinking: "drop me"}}}},
+		{Role: "user", Content: Content{Blocks: []Block{{Type: "tool_result", ToolUseID: "call_1", Content: json.RawMessage(`[{"type":"tool_reference","tool_name":"Read"},{"type":"text","text":"ok"}]`)}}}},
+		{Role: "assistant", Content: Content{Blocks: []Block{{Type: "server_tool_use", ID: "srv_1", Name: "web_search", Input: json.RawMessage(`{"query":"x"}`)}, {Type: "text", Text: "done"}, {Type: "thinking", Thinking: "tail"}}}},
+	}
+
+	got := NormalizePreviousResponseTail(msgs, false, false)
+	if len(got) != 2 {
+		t.Fatalf("len = %d: %+v", len(got), got)
+	}
+	first := got[0].Content.AsBlocks()
+	if len(first) != 1 || first[0].Type != "tool_result" || !strings.Contains(string(first[0].Content), "ok") || strings.Contains(string(first[0].Content), "tool_reference") {
+		t.Fatalf("tool result not preserved/stripped: %+v", first)
+	}
+	second := got[1].Content.AsBlocks()
+	if len(second) != 2 || second[0].Type != "text" || !strings.Contains(second[0].Text, "web_search") || second[1].Text != "done" {
+		t.Fatalf("server tool not degraded or tail thinking not stripped: %+v", second)
+	}
+}
+
+func TestNormalizePreviousResponseTailDropsEmptyUserAfterServerToolRemoval(t *testing.T) {
+	msgs := []Message{{Role: "user", Content: Content{Blocks: []Block{{Type: "web_search_tool_result", ToolUseID: "srv", Content: json.RawMessage(`"x"`)}}}}}
+	got := NormalizePreviousResponseTail(msgs, false, true)
+	if len(got) != 1 || got[0].Content.AsBlocks()[0].Type != "text" {
+		t.Fatalf("server tool should degrade to text: %+v", got)
+	}
+}

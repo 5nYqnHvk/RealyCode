@@ -667,3 +667,74 @@ func TestStreamEmitsCustomToolCallInputDelta(t *testing.T) {
 		}
 	}
 }
+
+func TestResponsesHelperEdges(t *testing.T) {
+	for _, errText := range []string{"previous_response_id not found", "previous response expired", "not found"} {
+		if !isInvalidPreviousResponseError(errString(errText)) {
+			t.Fatalf("expected invalid previous response: %q", errText)
+		}
+	}
+	if isInvalidPreviousResponseError(nil) || isInvalidPreviousResponseError(errString("rate limited")) {
+		t.Fatal("unexpected invalid previous response classification")
+	}
+	if got := normalizeToolArgsForAnthropic("function_call", ""); got != "{}" {
+		t.Fatalf("empty function args = %q", got)
+	}
+	if got := normalizeToolArgsForAnthropic("custom_tool_call", "raw text"); got != `{"input":"raw text"}` {
+		t.Fatalf("custom args = %q", got)
+	}
+	if got := normalizeToolArgsForAnthropic("custom_tool_call", `{"x":1}`); got != `{"x":1}` {
+		t.Fatalf("custom JSON args = %q", got)
+	}
+	if got := customToolInput(`{"input":"patch"}`); got != "patch" {
+		t.Fatalf("customToolInput = %q", got)
+	}
+	if !isCallableItem("function_call") || !isCallableItem("custom_tool_call") || isCallableItem("message") {
+		t.Fatal("isCallableItem mismatch")
+	}
+}
+
+func TestResponsesTextFormatErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  json.RawMessage
+		want string
+	}{
+		{"bad json", json.RawMessage(`{`), "output_config.format"},
+		{"missing type", json.RawMessage(`{}`), "type is required"},
+		{"schema missing", json.RawMessage(`{"type":"json_schema"}`), "schema is required"},
+		{"unsupported", json.RawMessage(`{"type":"xml"}`), "unsupported"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := responsesTextFormat(&anthropic.Request{OutputConfig: &anthropic.OutputConfig{ExtraFields: map[string]json.RawMessage{"format": tc.raw}}})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v", err)
+			}
+		})
+	}
+}
+
+func TestStreamHandlesResponsesErrorEvent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`event: response.error
+` + `data: {"type":"response.error","error":{"message":"bad upstream"}}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	adapter := &Adapter{pc: config.ProviderConfig{BaseURL: server.URL, APIKey: "key"}, client: server.Client()}
+	req := &anthropic.Request{Messages: []anthropic.Message{{Role: "user", Content: anthropic.Content{Raw: "hi"}}}}
+	rw := &recordResponseWriter{}
+	builder := sse.NewBuilder(sse.NewWriter(rw), "msg", "model", 1)
+	if err := adapter.Stream(context.Background(), req, "gpt", builder); err != nil {
+		t.Fatal(err)
+	}
+	out := rw.body.String()
+	if !strings.Contains(out, "bad upstream") || !strings.Contains(out, `"stop_reason":"end_turn"`) {
+		t.Fatalf("output = %s", out)
+	}
+}
+
+type errString string
+
+func (e errString) Error() string { return string(e) }
