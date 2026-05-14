@@ -240,6 +240,38 @@ func TestNormalizePreviousResponseTailDropsEmptyUserAfterServerToolRemoval(t *te
 	}
 }
 
+func TestImageBlockBuildsDataURL(t *testing.T) {
+	block := Block{Type: "image", Source: &ImageSource{Type: "base64", MediaType: "image/png", Data: "AAA"}}
+	got, err := block.ImageDataURL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "data:image/png;base64,AAA" {
+		t.Fatalf("data URL = %q", got)
+	}
+	raw, err := json.Marshal(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"source"`) || !strings.Contains(string(raw), `"media_type":"image/png"`) {
+		t.Fatalf("marshaled image block = %s", raw)
+	}
+}
+
+func TestImageBlockRejectsInvalidSource(t *testing.T) {
+	for _, tc := range []Block{
+		{Type: "text", Source: &ImageSource{Type: "base64", MediaType: "image/png", Data: "AAA"}},
+		{Type: "image"},
+		{Type: "image", Source: &ImageSource{Type: "url", MediaType: "image/png", Data: "AAA"}},
+		{Type: "image", Source: &ImageSource{Type: "base64", MediaType: "image/bmp", Data: "AAA"}},
+		{Type: "image", Source: &ImageSource{Type: "base64", MediaType: "image/png"}},
+	} {
+		if _, err := tc.ImageDataURL(); err == nil {
+			t.Fatalf("expected error for %+v", tc)
+		}
+	}
+}
+
 func TestToolResultTextForUpstreamCompactsLargeOutput(t *testing.T) {
 	var lines []string
 	for i := 0; i < 300; i++ {

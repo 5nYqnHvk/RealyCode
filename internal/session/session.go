@@ -398,6 +398,9 @@ func normalizeBlock(b anthropic.Block) map[string]any {
 	if b.Signature != "" {
 		m["signature"] = b.Signature
 	}
+	if b.Source != nil {
+		m["source"] = b.Source
+	}
 	if b.ID != "" {
 		m["id"] = b.ID
 	}

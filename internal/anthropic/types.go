@@ -254,6 +254,9 @@ type Block struct {
 	Thinking  string `json:"thinking,omitempty"`
 	Signature string `json:"signature,omitempty"`
 
+	// image
+	Source *ImageSource `json:"source,omitempty"`
+
 	// tool_use
 	ID     string          `json:"id,omitempty"`
 	Name   string          `json:"name,omitempty"`
@@ -267,6 +270,39 @@ type Block struct {
 }
 
 // Tool is one function tool exposed to the model.
+type ImageSource struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
+}
+
+func (b Block) ImageDataURL() (string, error) {
+	if b.Type != "image" {
+		return "", fmt.Errorf("image block type %q", b.Type)
+	}
+	if b.Source == nil {
+		return "", fmt.Errorf("image source is required")
+	}
+	if b.Source.Type != "base64" {
+		return "", fmt.Errorf("unsupported image source type %q", b.Source.Type)
+	}
+	if !isSupportedImageMediaType(b.Source.MediaType) {
+		return "", fmt.Errorf("unsupported image media_type %q", b.Source.MediaType)
+	}
+	if strings.TrimSpace(b.Source.Data) == "" {
+		return "", fmt.Errorf("image data is required")
+	}
+	return "data:" + b.Source.MediaType + ";base64," + b.Source.Data, nil
+}
+
+func isSupportedImageMediaType(mediaType string) bool {
+	switch mediaType {
+	case "image/png", "image/jpeg", "image/gif", "image/webp":
+		return true
+	}
+	return false
+}
+
 type Tool struct {
 	// Type distinguishes regular function tools from Anthropic server tools
 	// like "web_search_20250305" or "web_fetch_20250826". When Type is empty
