@@ -49,6 +49,7 @@ providers:
     # experimental_previous_response_id: false   # opt into non-Codex HTTP previous_response_id chaining
     # experimental_passthrough_server_tools: true  # pass server tools upstream as-is
     # responses_custom_tool_mode: native # native|function; function downgrades custom tools for stricter gateways
+    # responses_namespace_tools: false # group mcp__server__tool declarations as Responses namespace tools
 
   openai_chat:
     kind: openai_chat                      # POST /v1/chat/completions

@@ -1,0 +1,6 @@
+event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"id":"ctc_fixture_tail","type":"custom_tool_call","call_id":"call_custom","name":"apply_patch","input":"*** Begin"}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_custom_tail_1","usage":{"input_tokens":1,"output_tokens":1}}}
+

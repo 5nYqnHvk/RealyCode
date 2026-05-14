@@ -21,7 +21,7 @@ func TestFileStoreRoundTripSupportsLookup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store.Commit(lookup, "openai", "gpt", 1, "resp_1", 10, 2)
+	store.Commit(lookup, "openai", "gpt", 1, "resp_1", 10, 2, map[string]string{"call_1": "custom"})
 	store.Stats.Hits.Add(3)
 	if err := store.SaveFile(path); err != nil {
 		t.Fatal(err)
@@ -33,6 +33,9 @@ func TestFileStoreRoundTripSupportsLookup(t *testing.T) {
 	}
 	if loaded.Stats.Hits.Load() != 3 {
 		t.Fatalf("hits = %d", loaded.Stats.Hits.Load())
+	}
+	if got := loaded.Snapshot()[lookup.NewKey].CallKinds["call_1"]; got != "custom" {
+		t.Fatalf("call kind = %q", got)
 	}
 	next := &anthropic.Request{Messages: []anthropic.Message{
 		{Role: "user", Content: anthropic.Content{Raw: "first"}},

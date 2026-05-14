@@ -17,19 +17,20 @@ type diskSnapshot struct {
 }
 
 type diskEntry struct {
-	Key              string      `json:"key"`
-	ParentKey        string      `json:"parent_key"`
-	Provider         string      `json:"provider"`
-	UpstreamModel    string      `json:"upstream_model"`
-	SessionID        string      `json:"session_id"`
-	ToolsHash        string      `json:"tools_hash"`
-	InstructionsHash string      `json:"instructions_hash"`
-	MessageCount     int         `json:"message_count"`
-	LastMessage      diskMessage `json:"last_message"`
-	ResponseID       string      `json:"response_id"`
-	LastUsed         string      `json:"last_used"`
-	OutputTokens     int         `json:"output_tokens"`
-	InputTokens      int         `json:"input_tokens"`
+	Key              string            `json:"key"`
+	ParentKey        string            `json:"parent_key"`
+	Provider         string            `json:"provider"`
+	UpstreamModel    string            `json:"upstream_model"`
+	SessionID        string            `json:"session_id"`
+	ToolsHash        string            `json:"tools_hash"`
+	InstructionsHash string            `json:"instructions_hash"`
+	MessageCount     int               `json:"message_count"`
+	LastMessage      diskMessage       `json:"last_message"`
+	ResponseID       string            `json:"response_id"`
+	CallKinds        map[string]string `json:"call_kinds,omitempty"`
+	LastUsed         string            `json:"last_used"`
+	OutputTokens     int               `json:"output_tokens"`
+	InputTokens      int               `json:"input_tokens"`
 }
 
 type diskMessage struct {
@@ -92,6 +93,7 @@ func LoadFile(path string, ttl time.Duration, max int) (*Store, error) {
 			MessageCount:     item.MessageCount,
 			LastMessage:      anthropic.Message{Role: item.LastMessage.Role, Content: content},
 			ResponseID:       item.ResponseID,
+			CallKinds:        copyStringMap(item.CallKinds),
 			LastUsed:         lastUsed,
 			OutputTokens:     item.OutputTokens,
 			InputTokens:      item.InputTokens,
@@ -127,6 +129,7 @@ func (s *Store) SaveFile(path string) error {
 			MessageCount:     entry.MessageCount,
 			LastMessage:      diskMessage{Role: entry.LastMessage.Role, Content: content},
 			ResponseID:       entry.ResponseID,
+			CallKinds:        copyStringMap(entry.CallKinds),
 			LastUsed:         entry.LastUsed.UTC().Format(time.RFC3339Nano),
 			OutputTokens:     entry.OutputTokens,
 			InputTokens:      entry.InputTokens,

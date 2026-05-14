@@ -66,6 +66,7 @@ providers:
     experimental_passthrough_server_tools: true
     experimental_previous_response_id: true
     responses_custom_tool_mode: function
+    responses_namespace_tools: true
     codex_auth_path: /tmp/codex-auth.json
   openai_chat:
     kind: openai_chat
@@ -101,6 +102,7 @@ providers:
 		!provider.ExperimentalPassthroughServerTools ||
 		!provider.ExperimentalPreviousResponseID ||
 		provider.ResponsesCustomToolMode != "function" ||
+		!provider.ResponsesNamespaceTools ||
 		provider.CodexAuthPath != "/tmp/codex-auth.json" {
 		t.Fatalf("openai_responses provider = %+v", provider)
 	}
@@ -211,6 +213,27 @@ providers:
 	}
 
 	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "only valid for openai_responses") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestLoadRejectsResponsesNamespaceToolsOutsideResponsesProvider(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "relaycode.yaml")
+	body := `routes:
+  - match: "*"
+    provider: p
+    model: gpt
+providers:
+  p:
+    kind: openai_chat
+    base_url: https://api.example.com/v1
+    responses_namespace_tools: true
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "responses_namespace_tools") {
 		t.Fatalf("err = %v", err)
 	}
 }

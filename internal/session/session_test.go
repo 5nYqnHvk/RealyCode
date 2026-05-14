@@ -45,7 +45,7 @@ func TestPrepareChainsAppendedLastUserBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store.Commit(lookup, "provider", "model", len(first.Messages), "resp_1", 1, 1)
+	store.Commit(lookup, "provider", "model", len(first.Messages), "resp_1", 1, 1, nil)
 
 	second := &anthropic.Request{Messages: []anthropic.Message{
 		{Role: "user", Content: anthropic.Content{Raw: "first"}},

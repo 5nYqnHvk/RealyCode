@@ -1,0 +1,6 @@
+event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"id":"fc_fixture_ns","type":"function_call","call_id":"call_namespace","namespace":"mcp__calendar__","name":"create_event","arguments":"{\"title\":\"demo\"}"}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_namespace","usage":{"input_tokens":1,"output_tokens":1}}}
+

@@ -64,6 +64,7 @@ type ProviderConfig struct {
 	MaxConcurrency                     int
 	ExperimentalPreviousResponseID     bool
 	ResponsesCustomToolMode            string
+	ResponsesNamespaceTools            bool
 	CompactToolResults                 bool
 }
 
@@ -179,6 +180,7 @@ func fromDoc(doc yamlMap) (*Config, error) {
 			MaxConcurrency:                     intAt(entry, "max_concurrency"),
 			ExperimentalPreviousResponseID:     boolAt(entry, "experimental_previous_response_id"),
 			ResponsesCustomToolMode:            strings.TrimSpace(stringAt(entry, "responses_custom_tool_mode")),
+			ResponsesNamespaceTools:            boolAt(entry, "responses_namespace_tools"),
 		}
 		if pc.Kind != KindOpenAIChat && pc.Kind != KindOpenAIResponses && pc.Kind != KindAnthropicMessages {
 			return nil, fmt.Errorf("providers.%s: unknown kind %q (want openai_chat|openai_responses|anthropic_messages)", name, pc.Kind)
@@ -206,14 +208,16 @@ func (c *Config) validate() error {
 		return errors.New(`routes: a fallback route with match: "*" is required`)
 	}
 	for name, provider := range c.Providers {
-		if provider.ResponsesCustomToolMode == "" || provider.ResponsesCustomToolMode == "native" {
-			continue
+		if provider.ResponsesCustomToolMode != "" && provider.ResponsesCustomToolMode != "native" {
+			if provider.Kind != KindOpenAIResponses {
+				return fmt.Errorf("providers.%s: responses_custom_tool_mode is only valid for openai_responses providers", name)
+			}
+			if provider.ResponsesCustomToolMode != "function" {
+				return fmt.Errorf("providers.%s: responses_custom_tool_mode must be native or function", name)
+			}
 		}
-		if provider.Kind != KindOpenAIResponses {
-			return fmt.Errorf("providers.%s: responses_custom_tool_mode is only valid for openai_responses providers", name)
-		}
-		if provider.ResponsesCustomToolMode != "function" {
-			return fmt.Errorf("providers.%s: responses_custom_tool_mode must be native or function", name)
+		if provider.ResponsesNamespaceTools && provider.Kind != KindOpenAIResponses {
+			return fmt.Errorf("providers.%s: responses_namespace_tools is only valid for openai_responses providers", name)
 		}
 	}
 	return nil

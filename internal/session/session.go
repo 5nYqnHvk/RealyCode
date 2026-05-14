@@ -26,7 +26,8 @@ type Entry struct {
 	InstructionsHash string // instructions fingerprint
 	MessageCount     int    // messages[:MessageCount] are covered by this session
 	LastMessage      anthropic.Message
-	ResponseID       string // upstream response.id to chain from
+	ResponseID       string            // upstream response.id to chain from
+	CallKinds        map[string]string // call_id -> function|custom for tail-only tool outputs
 	LastUsed         time.Time
 	OutputTokens     int // cumulative output tokens for logging
 	InputTokens      int
@@ -194,7 +195,7 @@ func (s *Store) Prepare(provider, upstreamModel string, req *anthropic.Request) 
 
 // Commit stores (or refreshes) a session entry keyed by the full-length
 // fingerprint returned from Prepare.
-func (s *Store) Commit(lookup *Lookup, provider, upstreamModel string, messageCount int, responseID string, inputTokens, outputTokens int) {
+func (s *Store) Commit(lookup *Lookup, provider, upstreamModel string, messageCount int, responseID string, inputTokens, outputTokens int, callKinds map[string]string) {
 	if responseID == "" {
 		return
 	}
@@ -214,6 +215,7 @@ func (s *Store) Commit(lookup *Lookup, provider, upstreamModel string, messageCo
 		MessageCount:     messageCount,
 		LastMessage:      lookup.NewLastMessage,
 		ResponseID:       responseID,
+		CallKinds:        copyStringMap(callKinds),
 		LastUsed:         time.Now(),
 		InputTokens:      inputTokens,
 		OutputTokens:     outputTokens,
@@ -352,6 +354,17 @@ func chainableTail(tail []anthropic.Message) bool {
 		}
 	}
 	return true
+}
+
+func copyStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 // hashMessagePrefixes returns a slice where index i = hash of messages[:i+1].

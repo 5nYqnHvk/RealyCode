@@ -670,7 +670,7 @@ func TestBuildRequestCompactsToolResultsWhenEnabled(t *testing.T) {
 		{Role: "user", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "tool_result", ToolUseID: "call_1", Content: raw}}}},
 	}}
 
-	body, _, err := buildRequestWithOptions(req, "gpt", true, true, "")
+	body, _, err := buildRequestWithOptions(req, "gpt", true, true, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -716,7 +716,7 @@ func TestBuildRequestUsesFunctionModeForCustomTools(t *testing.T) {
 			{Role: "user", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "tool_result", ToolUseID: "call_1", Content: json.RawMessage(`"ok"`)}}}},
 		},
 	}
-	body, _, err := buildRequestWithOptions(req, "gpt", false, false, "function")
+	body, _, err := buildRequestWithOptions(req, "gpt", false, false, "function", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -736,6 +736,121 @@ func TestBuildRequestUsesFunctionModeForCustomTools(t *testing.T) {
 	}
 	if items[1].Type != "function_call_output" || items[1].Output != "ok" {
 		t.Fatalf("function-mode output item = %+v", items[1])
+	}
+}
+
+func TestBuildRequestDeclaresMCPToolsAsNamespaceWhenEnabled(t *testing.T) {
+	req := &anthropic.Request{
+		Tools: []anthropic.Tool{
+			{Name: "mcp__calendar__create_event", Description: "create", InputSchema: json.RawMessage(`{"type":"object","properties":{"title":{"type":"string"}}}`)},
+			{Name: "mcp__calendar__delete_event", Description: "delete", InputSchema: json.RawMessage(`{"type":"object"}`)},
+			{Name: "Read", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		},
+		ToolChoice: json.RawMessage(`{"type":"tool","name":"mcp__calendar__create_event"}`),
+		Messages: []anthropic.Message{
+			{Role: "assistant", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "tool_use", ID: "call_1", Name: "mcp__calendar__create_event", Input: json.RawMessage(`{"title":"demo"}`)}}}},
+		},
+	}
+	body, _, err := buildRequestWithOptions(req, "gpt", true, false, "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := body["tools"].([]toolDecl)
+	if len(tools) != 2 || tools[0].Type != "function" || tools[1].Type != "namespace" || tools[1].Name != "mcp__calendar__" {
+		t.Fatalf("tools = %+v", tools)
+	}
+	if len(tools[1].Tools) != 2 || tools[1].Tools[0].Name != "create_event" || tools[1].Tools[1].Name != "delete_event" {
+		t.Fatalf("namespace tools = %+v", tools[1].Tools)
+	}
+	choice := body["tool_choice"].(map[string]any)
+	if choice["type"] != "function" || choice["namespace"] != "mcp__calendar__" || choice["name"] != "create_event" {
+		t.Fatalf("tool_choice = %+v", choice)
+	}
+	items := body["input"].([]inputItem)
+	if items[0].Type != "function_call" || items[0].Namespace != "mcp__calendar__" || items[0].Name != "create_event" {
+		t.Fatalf("input item = %+v", items[0])
+	}
+}
+
+func TestStreamEmitsNamespacedFunctionCallAsAnthropicToolUse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`event: response.output_item.done
+` + `data: {"type":"response.output_item.done","item":{"id":"fc_1","type":"function_call","call_id":"call_1","namespace":"mcp__calendar__","name":"create_event","arguments":"{\"title\":\"demo\"}"}}` + "\n\n"))
+		_, _ = w.Write([]byte(`event: response.completed
+` + `data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":1,"output_tokens":1}}}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	adapter := &Adapter{pc: config.ProviderConfig{BaseURL: server.URL, APIKey: "key", ResponsesNamespaceTools: true}, client: server.Client()}
+	req := &anthropic.Request{
+		Messages: []anthropic.Message{{Role: "user", Content: anthropic.Content{Raw: "create"}}},
+		Tools:    []anthropic.Tool{{Name: "mcp__calendar__create_event", InputSchema: json.RawMessage(`{"type":"object","properties":{"title":{"type":"string"}},"required":["title"]}`)}},
+	}
+	rw := &recordResponseWriter{}
+	builder := sse.NewBuilder(sse.NewWriter(rw), "msg", "model", 1)
+	if err := adapter.Stream(context.Background(), req, "gpt", builder); err != nil {
+		t.Fatal(err)
+	}
+	out := rw.body.String()
+	for _, want := range []string{`"type":"tool_use"`, `"name":"mcp__calendar__create_event"`, `"partial_json":"{\"title\":\"demo\"}"`, `"stop_reason":"tool_use"`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %s:\n%s", want, out)
+		}
+	}
+}
+
+func TestStreamChainsCustomToolOutputFromStoredCallKind(t *testing.T) {
+	var bodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		bodies = append(bodies, body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		if len(bodies) == 1 {
+			_, _ = w.Write([]byte(`event: response.output_item.done
+` + `data: {"type":"response.output_item.done","item":{"id":"ctc_1","type":"custom_tool_call","call_id":"call_custom","name":"apply_patch","input":"*** Begin"}}` + "\n\n"))
+			_, _ = w.Write([]byte(`event: response.completed
+` + `data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":1,"output_tokens":1}}}` + "\n\n"))
+			return
+		}
+		_, _ = w.Write([]byte(`event: response.completed
+` + `data: {"type":"response.completed","response":{"id":"resp_2","usage":{"input_tokens":1,"output_tokens":1}}}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	adapter := &Adapter{pc: config.ProviderConfig{BaseURL: server.URL, APIKey: "key", ExperimentalPreviousResponseID: true}, client: server.Client()}
+	adapter.SetSession(session.NewStore(time.Hour, 10), "openai")
+	first := &anthropic.Request{
+		Messages: []anthropic.Message{{Role: "user", Content: anthropic.Content{Raw: "patch"}}},
+		Tools:    []anthropic.Tool{{Name: "apply_patch", Type: "custom"}},
+	}
+	second := &anthropic.Request{
+		Messages: []anthropic.Message{
+			{Role: "user", Content: anthropic.Content{Raw: "patch"}},
+			{Role: "assistant", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "tool_use", ID: "call_custom", Name: "apply_patch", Input: json.RawMessage(`{"input":"*** Begin"}`)}}}},
+			{Role: "user", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "tool_result", ToolUseID: "call_custom", Content: json.RawMessage(`"ok"`)}}}},
+		},
+		Tools: []anthropic.Tool{{Name: "apply_patch", Type: "custom"}},
+	}
+	for _, req := range []*anthropic.Request{first, second} {
+		rw := &recordResponseWriter{}
+		builder := sse.NewBuilder(sse.NewWriter(rw), "msg", "model", 1)
+		if err := adapter.Stream(context.Background(), req, "gpt", builder); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(bodies) != 2 || bodies[1]["previous_response_id"] != "resp_1" {
+		t.Fatalf("bodies = %+v", bodies)
+	}
+	input := bodies[1]["input"].([]any)
+	item := input[0].(map[string]any)
+	if item["type"] != "custom_tool_call_output" || item["call_id"] != "call_custom" || item["output"] != "ok" {
+		t.Fatalf("tail item = %+v body=%+v", item, bodies[1])
 	}
 }
 

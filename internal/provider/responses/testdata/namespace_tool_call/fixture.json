@@ -1,0 +1,24 @@
+{
+  "name": "namespace tool call",
+  "config": {
+    "responses_namespace_tools": true
+  },
+  "request": {
+    "messages": [
+      {"role": "user", "content": "create calendar event"}
+    ],
+    "tools": [
+      {"name": "mcp__calendar__create_event", "description": "create event", "input_schema": {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]}}
+    ]
+  },
+  "want_body": {
+    "tool_type": "namespace",
+    "tool_namespace": "mcp__calendar__",
+    "namespace_tool_name": "create_event"
+  },
+  "want_output": [
+    "\"type\":\"tool_use\"",
+    "\"name\":\"mcp__calendar__create_event\"",
+    "\"partial_json\":\"{\\\"title\\\":\\\"demo\\\"}\""
+  ]
+}

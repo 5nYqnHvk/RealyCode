@@ -117,9 +117,9 @@ func (a *Adapter) streamOnce(
 	var aliases map[string]map[string]string
 	mode := responsesCustomToolMode(a.pc.ResponsesCustomToolMode)
 	if chained {
-		body, aliases, err = buildTailRequestWithOptions(bodyReq, upstreamModel, a.pc.ExperimentalPassthroughServerTools, a.pc.CompactToolResults, mode)
+		body, aliases, err = buildTailRequestWithOptions(bodyReq, upstreamModel, a.pc.ExperimentalPassthroughServerTools, a.pc.CompactToolResults, mode, a.pc.ResponsesNamespaceTools, lookup.Chain.CallKinds)
 	} else {
-		body, aliases, err = buildRequestWithOptions(bodyReq, upstreamModel, a.pc.ExperimentalPassthroughServerTools, a.pc.CompactToolResults, mode)
+		body, aliases, err = buildRequestWithOptions(bodyReq, upstreamModel, a.pc.ExperimentalPassthroughServerTools, a.pc.CompactToolResults, mode, a.pc.ResponsesNamespaceTools)
 	}
 	if err != nil {
 		return err
@@ -162,11 +162,13 @@ func (a *Adapter) streamOnce(
 		kind       string
 		callID     string
 		name       string
+		namespace  string
 		args       string
 		toolClosed bool
 	}
 	items := map[string]*itemState{}
 	emittedToolCall := false
+	emittedCallKinds := map[string]string{}
 	registry := toolguard.NewRegistry(req.Tools, a.pc.ExperimentalPassthroughServerTools, aliases)
 
 	stripper := tagStripper{}
@@ -188,20 +190,22 @@ func (a *Adapter) streamOnce(
 			args = st.args
 		}
 		args = normalizeToolArgsForAnthropic(st.kind, args)
-		restored, ok := registry.Validate(st.name, args)
+		toolName := responsesAnthropicToolName(st.namespace, st.name)
+		restored, ok := registry.Validate(toolName, args)
 		if !ok {
 			if os.Getenv("RELAYCODE_DEBUG_UPSTREAM") == "1" {
-				log.Printf("responses: DROPPED tool_call name=%s call_id=%s args=%s (schema validation failed)", st.name, st.callID, args)
+				log.Printf("responses: DROPPED tool_call name=%s call_id=%s args=%s (schema validation failed)", toolName, st.callID, args)
 			} else {
-				log.Printf("responses: DROPPED tool_call name=%s call_id=%s (schema validation failed)", st.name, st.callID)
+				log.Printf("responses: DROPPED tool_call name=%s call_id=%s (schema validation failed)", toolName, st.callID)
 			}
 			return
 		}
-		b.StartTool(st.callID, st.name)
+		b.StartTool(st.callID, toolName)
 		b.EmitToolInput(st.callID, restored)
 		b.StopTool(st.callID)
 		st.toolClosed = true
 		emittedToolCall = true
+		emittedCallKinds[st.callID] = responsesStoredCallKind(st.kind)
 	}
 	findItem := func(itemID, callID string) *itemState {
 		if itemID != "" {
@@ -252,16 +256,17 @@ func (a *Adapter) streamOnce(
 		case "response.output_item.added":
 			var wrap struct {
 				Item struct {
-					ID     string `json:"id"`
-					Type   string `json:"type"`
-					CallID string `json:"call_id,omitempty"`
-					Name   string `json:"name,omitempty"`
+					ID        string `json:"id"`
+					Type      string `json:"type"`
+					CallID    string `json:"call_id,omitempty"`
+					Name      string `json:"name,omitempty"`
+					Namespace string `json:"namespace,omitempty"`
 				} `json:"item"`
 			}
 			if err := json.Unmarshal([]byte(ev.Data), &wrap); err != nil {
 				return nil
 			}
-			items[wrap.Item.ID] = &itemState{index: len(items), kind: wrap.Item.Type, callID: wrap.Item.CallID, name: wrap.Item.Name}
+			items[wrap.Item.ID] = &itemState{index: len(items), kind: wrap.Item.Type, callID: wrap.Item.CallID, name: wrap.Item.Name, namespace: wrap.Item.Namespace}
 
 		case "response.output_text.delta":
 			if header.Delta == "" {
@@ -330,6 +335,7 @@ func (a *Adapter) streamOnce(
 					Type      string `json:"type"`
 					CallID    string `json:"call_id,omitempty"`
 					Name      string `json:"name,omitempty"`
+					Namespace string `json:"namespace,omitempty"`
 					Arguments string `json:"arguments,omitempty"`
 					Input     string `json:"input,omitempty"`
 				} `json:"item"`
@@ -350,6 +356,9 @@ func (a *Adapter) streamOnce(
 			}
 			if st.name == "" {
 				st.name = wrap.Item.Name
+			}
+			if st.namespace == "" {
+				st.namespace = wrap.Item.Namespace
 			}
 			if isCallableItem(st.kind) && st.callID != "" && st.name != "" {
 				if wrap.Item.Arguments != "" {
@@ -458,7 +467,7 @@ func (a *Adapter) streamOnce(
 	b.SetStopReason(stopReason)
 
 	if !sawUpstreamError && a.store != nil && lookup != nil && newResponseID != "" {
-		a.store.Commit(lookup, a.providerName, upstreamModel, len(req.Messages), newResponseID, inputTokens, outputTokens)
+		a.store.Commit(lookup, a.providerName, upstreamModel, len(req.Messages), newResponseID, inputTokens, outputTokens, emittedCallKinds)
 		a.store.Stats.InputTokens.Add(int64(inputTokens))
 		a.store.Stats.OutputTokens.Add(int64(outputTokens))
 		if chained {
@@ -610,14 +619,15 @@ func emitWebSearchCall(data string, b *sse.Builder) (bool, error) {
 
 // Responses API input items (subset we emit).
 type inputItem struct {
-	Type    string             `json:"type"`
-	Role    string             `json:"role,omitempty"`
-	Content []inputContentPart `json:"content,omitempty"`
-	Name    string             `json:"name,omitempty"`
-	CallID  string             `json:"call_id,omitempty"`
-	Args    string             `json:"arguments,omitempty"`
-	Input   string             `json:"input,omitempty"`
-	Output  string             `json:"output,omitempty"`
+	Type      string             `json:"type"`
+	Role      string             `json:"role,omitempty"`
+	Content   []inputContentPart `json:"content,omitempty"`
+	Name      string             `json:"name,omitempty"`
+	Namespace string             `json:"namespace,omitempty"`
+	CallID    string             `json:"call_id,omitempty"`
+	Args      string             `json:"arguments,omitempty"`
+	Input     string             `json:"input,omitempty"`
+	Output    string             `json:"output,omitempty"`
 }
 
 type inputContentPart struct {
@@ -634,6 +644,13 @@ type toolDecl struct {
 	Parameters        json.RawMessage `json:"parameters,omitempty"`
 	Format            map[string]any  `json:"format,omitempty"`
 	ExternalWebAccess *bool           `json:"external_web_access,omitempty"`
+	Tools             []toolDecl      `json:"tools,omitempty"`
+}
+
+type responsesToolRef struct {
+	Kind      string
+	Name      string
+	Namespace string
 }
 
 func buildRequest(r *anthropic.Request, model string, passthroughServerTools bool) (map[string]any, error) {
@@ -642,19 +659,19 @@ func buildRequest(r *anthropic.Request, model string, passthroughServerTools boo
 }
 
 func buildRequestWithAliases(r *anthropic.Request, model string, passthroughServerTools bool) (map[string]any, map[string]map[string]string, error) {
-	return buildRequestWithOptions(r, model, passthroughServerTools, false, "")
+	return buildRequestWithOptions(r, model, passthroughServerTools, false, "", false)
 }
 
-func buildRequestWithOptions(r *anthropic.Request, model string, passthroughServerTools, compactToolResults bool, customToolMode string) (map[string]any, map[string]map[string]string, error) {
-	return buildRequestWithNormalizer(r, model, passthroughServerTools, compactToolResults, responsesCustomToolMode(customToolMode), anthropic.NormalizeMessagesForUpstream)
+func buildRequestWithOptions(r *anthropic.Request, model string, passthroughServerTools, compactToolResults bool, customToolMode string, namespaceTools bool) (map[string]any, map[string]map[string]string, error) {
+	return buildRequestWithNormalizer(r, model, passthroughServerTools, compactToolResults, responsesCustomToolMode(customToolMode), namespaceTools, nil, anthropic.NormalizeMessagesForUpstream)
 }
 
 func buildTailRequestWithAliases(r *anthropic.Request, model string, passthroughServerTools bool) (map[string]any, map[string]map[string]string, error) {
-	return buildTailRequestWithOptions(r, model, passthroughServerTools, false, "")
+	return buildTailRequestWithOptions(r, model, passthroughServerTools, false, "", false, nil)
 }
 
-func buildTailRequestWithOptions(r *anthropic.Request, model string, passthroughServerTools, compactToolResults bool, customToolMode string) (map[string]any, map[string]map[string]string, error) {
-	return buildRequestWithNormalizer(r, model, passthroughServerTools, compactToolResults, responsesCustomToolMode(customToolMode), anthropic.NormalizePreviousResponseTail)
+func buildTailRequestWithOptions(r *anthropic.Request, model string, passthroughServerTools, compactToolResults bool, customToolMode string, namespaceTools bool, priorCallKinds map[string]string) (map[string]any, map[string]map[string]string, error) {
+	return buildRequestWithNormalizer(r, model, passthroughServerTools, compactToolResults, responsesCustomToolMode(customToolMode), namespaceTools, priorCallKinds, anthropic.NormalizePreviousResponseTail)
 }
 
 func buildRequestWithNormalizer(
@@ -663,16 +680,20 @@ func buildRequestWithNormalizer(
 	passthroughServerTools bool,
 	compactToolResults bool,
 	customToolMode string,
+	namespaceTools bool,
+	priorCallKinds map[string]string,
 	normalize func([]anthropic.Message, bool, bool) []anthropic.Message,
 ) (map[string]any, map[string]map[string]string, error) {
 	if fields := r.UnsupportedOpenAIFields(); len(fields) > 0 {
 		return nil, nil, fmt.Errorf("openai_responses does not support Anthropic-only fields: %s", strings.Join(fields, ", "))
 	}
-	items, err := convertMessagesToItems(
+	items, err := convertMessagesToItemsWithOptions(
 		normalize(r.Messages, passthroughServerTools, r.HasToolSearchBeta()),
 		passthroughServerTools,
 		responsesCustomToolNames(r.Tools, passthroughServerTools, customToolMode),
 		responsesFunctionModeCustomToolNames(r.Tools, passthroughServerTools, customToolMode),
+		responsesToolRefs(r.Tools, passthroughServerTools, customToolMode, namespaceTools),
+		priorCallKinds,
 		compactToolResults,
 	)
 	if err != nil {
@@ -690,7 +711,7 @@ func buildRequestWithNormalizer(
 	if sysText = responsesInstructions(sysText, len(anthropic.ToolsForUpstream(r.Tools, passthroughServerTools)) > 0 && !isToolChoiceNone(r.ToolChoice)); sysText != "" {
 		body["instructions"] = sysText
 	}
-	aliases, err := applyCommonFields(body, r, passthroughServerTools, customToolMode)
+	aliases, err := applyCommonFields(body, r, passthroughServerTools, customToolMode, namespaceTools)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -703,7 +724,7 @@ func responsesInstructions(sysText string, hasTools bool) string {
 	return provider.InstructionsWithToolUseBridge(sysText, hasTools)
 }
 
-func applyCommonFields(body map[string]any, r *anthropic.Request, passthroughServerTools bool, customToolMode string) (map[string]map[string]string, error) {
+func applyCommonFields(body map[string]any, r *anthropic.Request, passthroughServerTools bool, customToolMode string, namespaceTools bool) (map[string]map[string]string, error) {
 	aliases := map[string]map[string]string{}
 	if r.MaxTokens > 0 {
 		body["max_output_tokens"] = r.MaxTokens
@@ -722,30 +743,22 @@ func applyCommonFields(body map[string]any, r *anthropic.Request, passthroughSer
 	if text != nil {
 		body["text"] = text
 	}
-	// Match openai/codex HTTP request shape: tool_choice and parallel_tool_calls
-	// are always present; keep parallel calls disabled for Claude Code tools.
 	body["parallel_tool_calls"] = false
 	if _, set := body["store"]; !set {
 		body["store"] = false
 	}
-	toolKinds := map[string]string{}
+	toolRefs := map[string]responsesToolRef{}
 	if len(r.Tools) > 0 {
-		upstreamTools := anthropic.ToolsForUpstream(r.Tools, passthroughServerTools)
-		if len(upstreamTools) > 0 {
-			tools := make([]toolDecl, 0, len(upstreamTools))
-			for _, t := range upstreamTools {
-				kind := responsesToolKind(t, customToolMode)
-				toolKinds[t.Name] = kind
-				params, toolAliases := toolargs.SanitizeParameters(t.InputSchema)
-				if len(toolAliases) > 0 {
-					aliases[t.Name] = toolAliases
-				}
-				tools = append(tools, toResponsesToolDecl(t, kind, params, customToolMode))
-			}
+		tools, refs, toolAliases := responsesToolDecls(r.Tools, passthroughServerTools, customToolMode, namespaceTools)
+		if len(tools) > 0 {
 			body["tools"] = tools
 		}
+		toolRefs = refs
+		for name, aliasesForTool := range toolAliases {
+			aliases[name] = aliasesForTool
+		}
 	}
-	body["tool_choice"] = responsesToolChoice(r.ToolChoice, toolKinds)
+	body["tool_choice"] = responsesToolChoice(r.ToolChoice, toolRefs)
 	return aliases, nil
 }
 
@@ -761,6 +774,57 @@ func responsesToolKind(t anthropic.Tool, customToolMode string) string {
 		return "custom"
 	}
 	return "function"
+}
+
+func responsesToolDecls(tools []anthropic.Tool, passthroughServerTools bool, customToolMode string, namespaceTools bool) ([]toolDecl, map[string]responsesToolRef, map[string]map[string]string) {
+	upstreamTools := anthropic.ToolsForUpstream(tools, passthroughServerTools)
+	out := make([]toolDecl, 0, len(upstreamTools))
+	refs := map[string]responsesToolRef{}
+	aliases := map[string]map[string]string{}
+	type namespaceGroup struct {
+		name  string
+		tools []toolDecl
+	}
+	groups := map[string]*namespaceGroup{}
+	var groupOrder []string
+	for _, t := range upstreamTools {
+		if t.Name == "" {
+			continue
+		}
+		kind := responsesToolKind(t, customToolMode)
+		params, toolAliases := toolargs.SanitizeParameters(t.InputSchema)
+		if len(toolAliases) > 0 {
+			aliases[t.Name] = toolAliases
+		}
+		decl := toResponsesToolDecl(t, kind, params, customToolMode)
+		ref := responsesToolRef{Kind: kind, Name: t.Name}
+		if namespaceTools && kind == "function" {
+			if namespace, localName, ok := responsesMCPToolNamespace(t.Name); ok {
+				decl.Name = localName
+				ref.Name = localName
+				ref.Namespace = namespace
+				if groups[namespace] == nil {
+					groups[namespace] = &namespaceGroup{name: namespace}
+					groupOrder = append(groupOrder, namespace)
+				}
+				groups[namespace].tools = append(groups[namespace].tools, decl)
+				refs[t.Name] = ref
+				continue
+			}
+		}
+		out = append(out, decl)
+		refs[t.Name] = ref
+	}
+	for _, namespace := range groupOrder {
+		group := groups[namespace]
+		out = append(out, toolDecl{
+			Type:        "namespace",
+			Name:        namespace,
+			Description: "Tools in the " + namespace + " namespace.",
+			Tools:       group.tools,
+		})
+	}
+	return out, refs, aliases
 }
 
 func toResponsesToolDecl(t anthropic.Tool, kind string, params json.RawMessage, customToolMode string) toolDecl {
@@ -787,6 +851,35 @@ func toResponsesToolDecl(t anthropic.Tool, kind string, params json.RawMessage, 
 		Strict:      &strict,
 		Parameters:  params,
 	}
+}
+
+func responsesMCPToolNamespace(name string) (string, string, bool) {
+	if !strings.HasPrefix(name, "mcp__") {
+		return "", "", false
+	}
+	rest := strings.TrimPrefix(name, "mcp__")
+	idx := strings.Index(rest, "__")
+	if idx <= 0 || idx+2 >= len(rest) {
+		return "", "", false
+	}
+	return "mcp__" + rest[:idx] + "__", rest[idx+2:], true
+}
+
+func responsesAnthropicToolName(namespace, name string) string {
+	if namespace == "" {
+		return name
+	}
+	if strings.HasPrefix(namespace, "mcp__") && strings.HasSuffix(namespace, "__") {
+		return namespace + name
+	}
+	return namespace + "__" + name
+}
+
+func responsesStoredCallKind(kind string) string {
+	if kind == "custom_tool_call" {
+		return "custom"
+	}
+	return "function"
 }
 
 func customToolInput(args string) string {
@@ -821,7 +914,7 @@ func isToolChoiceNone(raw json.RawMessage) bool {
 	return choice.Type == "none"
 }
 
-func responsesToolChoice(raw json.RawMessage, toolKinds map[string]string) any {
+func responsesToolChoice(raw json.RawMessage, toolRefs map[string]responsesToolRef) any {
 	if len(raw) == 0 {
 		return "auto"
 	}
@@ -841,11 +934,15 @@ func responsesToolChoice(raw json.RawMessage, toolKinds map[string]string) any {
 		return "none"
 	case "tool":
 		if choice.Name != "" {
-			kind := toolKinds[choice.Name]
-			if kind == "" {
-				kind = "function"
+			ref := toolRefs[choice.Name]
+			if ref.Kind == "" {
+				ref = responsesToolRef{Kind: "function", Name: choice.Name}
 			}
-			return map[string]any{"type": kind, "name": choice.Name}
+			out := map[string]any{"type": ref.Kind, "name": ref.Name}
+			if ref.Namespace != "" {
+				out["namespace"] = ref.Namespace
+			}
+			return out
 		}
 	}
 	return "auto"
@@ -908,9 +1005,21 @@ func responsesFunctionModeCustomToolNames(tools []anthropic.Tool, passthroughSer
 	return out
 }
 
+func responsesToolRefs(tools []anthropic.Tool, passthroughServerTools bool, customToolMode string, namespaceTools bool) map[string]responsesToolRef {
+	_, refs, _ := responsesToolDecls(tools, passthroughServerTools, customToolMode, namespaceTools)
+	return refs
+}
+
 func convertMessagesToItems(msgs []anthropic.Message, passthroughServerTools bool, customToolNames, functionCustomToolNames map[string]bool, compactToolResults bool) ([]inputItem, error) {
+	return convertMessagesToItemsWithOptions(msgs, passthroughServerTools, customToolNames, functionCustomToolNames, nil, nil, compactToolResults)
+}
+
+func convertMessagesToItemsWithOptions(msgs []anthropic.Message, passthroughServerTools bool, customToolNames, functionCustomToolNames map[string]bool, toolRefs map[string]responsesToolRef, priorCallKinds map[string]string, compactToolResults bool) ([]inputItem, error) {
 	var out []inputItem
 	callKinds := map[string]string{}
+	for k, v := range priorCallKinds {
+		callKinds[k] = v
+	}
 	for _, m := range msgs {
 		blocks := anthropic.BlocksForUpstream(m.Content.AsBlocks(), passthroughServerTools)
 		switch m.Role {
@@ -969,7 +1078,6 @@ func convertMessagesToItems(msgs []anthropic.Message, passthroughServerTools boo
 						preText = append(preText, b.Text)
 					}
 				case "thinking", "redacted_thinking":
-					// drop replay: Responses API does not accept raw thinking blocks
 				case "tool_use", "server_tool_use", "mcp_tool_use":
 					if b.Type == "server_tool_use" && b.Name == "web_search" {
 						continue
@@ -982,7 +1090,11 @@ func convertMessagesToItems(msgs []anthropic.Message, passthroughServerTools boo
 					if len(b.Input) > 0 {
 						args = string(b.Input)
 					}
-					item := inputItem{Type: "function_call", Name: b.Name, CallID: b.ID, Args: args}
+					ref := toolRefs[b.Name]
+					if ref.Name == "" {
+						ref = responsesToolRef{Kind: "function", Name: b.Name}
+					}
+					item := inputItem{Type: "function_call", Name: ref.Name, Namespace: ref.Namespace, CallID: b.ID, Args: args}
 					if customToolNames[b.Name] {
 						item.Type = "custom_tool_call"
 						item.Args = ""

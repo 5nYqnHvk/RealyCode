@@ -113,7 +113,7 @@ func TestHandleStatsReturnsCountersAndSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv.sessions.Commit(lookup, "p", "upstream", 1, "resp_1", 11, 7)
+	srv.sessions.Commit(lookup, "p", "upstream", 1, "resp_1", 11, 7, nil)
 	srv.sessions.Stats.Hits.Add(2)
 
 	hreq := httptest.NewRequest(http.MethodGet, "/debug/stats", nil)

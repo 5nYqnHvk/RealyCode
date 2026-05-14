@@ -1,0 +1,42 @@
+{
+  "name": "custom tool previous response tail",
+  "config": {
+    "experimental_previous_response_id": true
+  },
+  "requests": [
+    {
+      "messages": [
+        {"role": "user", "content": "patch"}
+      ],
+      "tools": [
+        {"name": "apply_patch", "type": "custom"}
+      ]
+    },
+    {
+      "messages": [
+        {"role": "user", "content": "patch"},
+        {"role": "assistant", "content": [
+          {"type": "tool_use", "id": "call_custom", "name": "apply_patch", "input": {"input": "*** Begin"}}
+        ]},
+        {"role": "user", "content": [
+          {"type": "tool_result", "tool_use_id": "call_custom", "content": "ok"}
+        ]}
+      ],
+      "tools": [
+        {"name": "apply_patch", "type": "custom"}
+      ]
+    }
+  ],
+  "streams": ["turn1_upstream.sse", "turn2_upstream.sse"],
+  "want_bodies": [
+    {
+      "previous_response_id_absent": true,
+      "store": true
+    },
+    {
+      "previous_response_id": "resp_custom_tail_1",
+      "store": true,
+      "tail_custom_output": {"call_id": "call_custom", "output": "ok"}
+    }
+  ]
+}

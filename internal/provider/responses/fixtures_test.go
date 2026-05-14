@@ -34,6 +34,7 @@ type responsesFixtureConfig struct {
 	ExperimentalPreviousResponseID     bool   `json:"experimental_previous_response_id,omitempty"`
 	ExperimentalPassthroughServerTools bool   `json:"experimental_passthrough_server_tools,omitempty"`
 	ResponsesCustomToolMode            string `json:"responses_custom_tool_mode,omitempty"`
+	ResponsesNamespaceTools            bool   `json:"responses_namespace_tools,omitempty"`
 }
 
 type responsesFixtureWantBody struct {
@@ -41,11 +42,14 @@ type responsesFixtureWantBody struct {
 	Reasoning                bool                         `json:"reasoning,omitempty"`
 	ToolType                 string                       `json:"tool_type,omitempty"`
 	ToolName                 string                       `json:"tool_name,omitempty"`
+	ToolNamespace            string                       `json:"tool_namespace,omitempty"`
+	NamespaceToolName        string                       `json:"namespace_tool_name,omitempty"`
 	PreviousResponseID       string                       `json:"previous_response_id,omitempty"`
 	PreviousResponseIDAbsent bool                         `json:"previous_response_id_absent,omitempty"`
 	Store                    *bool                        `json:"store,omitempty"`
 	InputLen                 *int                         `json:"input_len,omitempty"`
 	TailFunctionOutput       *responsesTailFunctionOutput `json:"tail_function_output,omitempty"`
+	TailCustomOutput         *responsesTailFunctionOutput `json:"tail_custom_output,omitempty"`
 }
 
 type responsesTailFunctionOutput struct {
@@ -61,6 +65,8 @@ func TestClaudeCodeResponsesFixtures(t *testing.T) {
 		"done_only_function_call",
 		"custom_tool_call_input_delta",
 		"custom_tool_function_mode",
+		"namespace_tool_call",
+		"custom_tool_previous_response_tail",
 		"captured_function_call_arguments_delta",
 		"captured_bash_tool_arguments_delta",
 		"previous_response_id_chain",
@@ -133,6 +139,7 @@ func runResponsesFixture(t *testing.T, dir string, fixture responsesFixture) {
 			ExperimentalPreviousResponseID:     fixture.Config.ExperimentalPreviousResponseID,
 			ExperimentalPassthroughServerTools: fixture.Config.ExperimentalPassthroughServerTools,
 			ResponsesCustomToolMode:            fixture.Config.ResponsesCustomToolMode,
+			ResponsesNamespaceTools:            fixture.Config.ResponsesNamespaceTools,
 		},
 		client: server.Client(),
 	}
@@ -203,7 +210,7 @@ func assertResponseOutput(t *testing.T, out string, wants []string) {
 }
 
 func (w responsesFixtureWantBody) hasAssertions() bool {
-	return w.PromptCacheKey != "" || w.Reasoning || w.ToolType != "" || w.ToolName != "" || w.PreviousResponseID != "" || w.PreviousResponseIDAbsent || w.Store != nil || w.InputLen != nil || w.TailFunctionOutput != nil
+	return w.PromptCacheKey != "" || w.Reasoning || w.ToolType != "" || w.ToolName != "" || w.ToolNamespace != "" || w.NamespaceToolName != "" || w.PreviousResponseID != "" || w.PreviousResponseIDAbsent || w.Store != nil || w.InputLen != nil || w.TailFunctionOutput != nil || w.TailCustomOutput != nil
 }
 
 func assertResponsesBody(t *testing.T, body map[string]any, want responsesFixtureWantBody) {
@@ -216,14 +223,33 @@ func assertResponsesBody(t *testing.T, body map[string]any, want responsesFixtur
 			t.Fatalf("reasoning missing: %+v", body)
 		}
 	}
-	if want.ToolType != "" || want.ToolName != "" {
+	if want.ToolType != "" || want.ToolName != "" || want.ToolNamespace != "" || want.NamespaceToolName != "" {
 		tools := body["tools"].([]any)
 		tool := tools[0].(map[string]any)
+		if want.ToolNamespace != "" {
+			for _, candidate := range tools {
+				candidateTool := candidate.(map[string]any)
+				if candidateTool["name"] == want.ToolNamespace {
+					tool = candidateTool
+					break
+				}
+			}
+		}
 		if want.ToolType != "" && tool["type"] != want.ToolType {
 			t.Fatalf("tool type = %+v body=%+v", tool["type"], body)
 		}
 		if want.ToolName != "" && tool["name"] != want.ToolName {
 			t.Fatalf("tool name = %+v body=%+v", tool["name"], body)
+		}
+		if want.ToolNamespace != "" && tool["name"] != want.ToolNamespace {
+			t.Fatalf("tool namespace = %+v body=%+v", tool["name"], body)
+		}
+		if want.NamespaceToolName != "" {
+			children := tool["tools"].([]any)
+			child := children[0].(map[string]any)
+			if child["name"] != want.NamespaceToolName {
+				t.Fatalf("namespace tool name = %+v body=%+v", child["name"], body)
+			}
 		}
 	}
 	if want.PreviousResponseID != "" && body["previous_response_id"] != want.PreviousResponseID {
@@ -248,6 +274,13 @@ func assertResponsesBody(t *testing.T, body map[string]any, want responsesFixtur
 		item := input[len(input)-1].(map[string]any)
 		if item["type"] != "function_call_output" || item["call_id"] != want.TailFunctionOutput.CallID || item["output"] != want.TailFunctionOutput.Output {
 			t.Fatalf("tail function output = %+v body=%+v", item, body)
+		}
+	}
+	if want.TailCustomOutput != nil {
+		input := body["input"].([]any)
+		item := input[len(input)-1].(map[string]any)
+		if item["type"] != "custom_tool_call_output" || item["call_id"] != want.TailCustomOutput.CallID || item["output"] != want.TailCustomOutput.Output {
+			t.Fatalf("tail custom output = %+v body=%+v", item, body)
 		}
 	}
 }
