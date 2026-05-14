@@ -611,6 +611,31 @@ func TestStreamDoesNotUsePreviousResponseIDByDefault(t *testing.T) {
 	}
 }
 
+func TestBuildRequestCompactsToolResultsWhenEnabled(t *testing.T) {
+	longOutput := strings.Repeat("line\n", 300)
+	raw, err := json.Marshal(longOutput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := &anthropic.Request{Messages: []anthropic.Message{
+		{Role: "assistant", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "tool_use", ID: "call_1", Name: "Bash", Input: json.RawMessage(`{"cmd":"yes"}`)}}}},
+		{Role: "user", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "tool_result", ToolUseID: "call_1", Content: raw}}}},
+	}}
+
+	body, _, err := buildRequestWithOptions(req, "gpt", true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := body["input"].([]inputItem)
+	if len(items) != 2 {
+		t.Fatalf("input = %+v", items)
+	}
+	output := items[1].Output
+	if !strings.Contains(output, "tool output compacted") || len(output) >= len(longOutput) {
+		t.Fatalf("tool result not compacted: len=%d output=%q", len(output), output)
+	}
+}
+
 func TestBuildRequestReplaysCustomToolCallAndOutput(t *testing.T) {
 	req := &anthropic.Request{
 		Tools: []anthropic.Tool{{Name: "apply_patch", Type: "custom"}},

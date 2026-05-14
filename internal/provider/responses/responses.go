@@ -114,9 +114,9 @@ func (a *Adapter) streamOnce(
 	var body map[string]any
 	var aliases map[string]map[string]string
 	if chained {
-		body, aliases, err = buildTailRequestWithAliases(bodyReq, upstreamModel, a.pc.ExperimentalPassthroughServerTools)
+		body, aliases, err = buildTailRequestWithOptions(bodyReq, upstreamModel, a.pc.ExperimentalPassthroughServerTools, a.pc.CompactToolResults)
 	} else {
-		body, aliases, err = buildRequestWithAliases(bodyReq, upstreamModel, a.pc.ExperimentalPassthroughServerTools)
+		body, aliases, err = buildRequestWithOptions(bodyReq, upstreamModel, a.pc.ExperimentalPassthroughServerTools, a.pc.CompactToolResults)
 	}
 	if err != nil {
 		return err
@@ -590,23 +590,32 @@ func buildRequest(r *anthropic.Request, model string, passthroughServerTools boo
 }
 
 func buildRequestWithAliases(r *anthropic.Request, model string, passthroughServerTools bool) (map[string]any, map[string]map[string]string, error) {
-	return buildRequestWithNormalizer(r, model, passthroughServerTools, anthropic.NormalizeMessagesForUpstream)
+	return buildRequestWithOptions(r, model, passthroughServerTools, false)
+}
+
+func buildRequestWithOptions(r *anthropic.Request, model string, passthroughServerTools, compactToolResults bool) (map[string]any, map[string]map[string]string, error) {
+	return buildRequestWithNormalizer(r, model, passthroughServerTools, compactToolResults, anthropic.NormalizeMessagesForUpstream)
 }
 
 func buildTailRequestWithAliases(r *anthropic.Request, model string, passthroughServerTools bool) (map[string]any, map[string]map[string]string, error) {
-	return buildRequestWithNormalizer(r, model, passthroughServerTools, anthropic.NormalizePreviousResponseTail)
+	return buildTailRequestWithOptions(r, model, passthroughServerTools, false)
+}
+
+func buildTailRequestWithOptions(r *anthropic.Request, model string, passthroughServerTools, compactToolResults bool) (map[string]any, map[string]map[string]string, error) {
+	return buildRequestWithNormalizer(r, model, passthroughServerTools, compactToolResults, anthropic.NormalizePreviousResponseTail)
 }
 
 func buildRequestWithNormalizer(
 	r *anthropic.Request,
 	model string,
 	passthroughServerTools bool,
+	compactToolResults bool,
 	normalize func([]anthropic.Message, bool, bool) []anthropic.Message,
 ) (map[string]any, map[string]map[string]string, error) {
 	if fields := r.UnsupportedOpenAIFields(); len(fields) > 0 {
 		return nil, nil, fmt.Errorf("openai_responses does not support Anthropic-only fields: %s", strings.Join(fields, ", "))
 	}
-	items, err := convertMessagesToItems(normalize(r.Messages, passthroughServerTools, r.HasToolSearchBeta()), passthroughServerTools, responsesCustomToolNames(r.Tools, passthroughServerTools))
+	items, err := convertMessagesToItems(normalize(r.Messages, passthroughServerTools, r.HasToolSearchBeta()), passthroughServerTools, responsesCustomToolNames(r.Tools, passthroughServerTools), compactToolResults)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -807,7 +816,7 @@ func responsesCustomToolNames(tools []anthropic.Tool, passthroughServerTools boo
 	return out
 }
 
-func convertMessagesToItems(msgs []anthropic.Message, passthroughServerTools bool, customToolNames map[string]bool) ([]inputItem, error) {
+func convertMessagesToItems(msgs []anthropic.Message, passthroughServerTools bool, customToolNames map[string]bool, compactToolResults bool) ([]inputItem, error) {
 	var out []inputItem
 	callKinds := map[string]string{}
 	for _, m := range msgs {
@@ -830,7 +839,7 @@ func convertMessagesToItems(msgs []anthropic.Message, passthroughServerTools boo
 						out = append(out, msg)
 						msg = inputItem{Type: "message", Role: "user"}
 					}
-					text, err := anthropic.ToolResultText(b.Content)
+					text, err := anthropic.ToolResultTextForUpstream(b.Content, compactToolResults)
 					if err != nil {
 						return nil, err
 					}

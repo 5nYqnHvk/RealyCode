@@ -50,7 +50,7 @@ func (a *Adapter) Stream(ctx context.Context, req *anthropic.Request, upstreamMo
 			return ctx.Err()
 		}
 	}
-	body, aliases, err := buildRequestWithAliases(req, upstreamModel, a.pc.ExperimentalPassthroughServerTools)
+	body, aliases, err := buildRequestWithOptions(req, upstreamModel, a.pc.ExperimentalPassthroughServerTools, a.pc.CompactToolResults)
 	if err != nil {
 		return err
 	}
@@ -258,10 +258,14 @@ func buildRequest(r *anthropic.Request, model string, passthroughServerTools boo
 }
 
 func buildRequestWithAliases(r *anthropic.Request, model string, passthroughServerTools bool) (map[string]any, map[string]map[string]string, error) {
+	return buildRequestWithOptions(r, model, passthroughServerTools, false)
+}
+
+func buildRequestWithOptions(r *anthropic.Request, model string, passthroughServerTools, compactToolResults bool) (map[string]any, map[string]map[string]string, error) {
 	if fields := r.UnsupportedOpenAIFields(); len(fields) > 0 {
 		return nil, nil, fmt.Errorf("openai_chat does not support Anthropic-only fields: %s", strings.Join(fields, ", "))
 	}
-	messages, err := convertMessages(r, passthroughServerTools)
+	messages, err := convertMessages(r, passthroughServerTools, compactToolResults)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -391,7 +395,7 @@ func chatResponseFormat(r *anthropic.Request) (any, error) {
 	}
 }
 
-func convertMessages(r *anthropic.Request, passthroughServerTools bool) ([]openaiMessage, error) {
+func convertMessages(r *anthropic.Request, passthroughServerTools, compactToolResults bool) ([]openaiMessage, error) {
 	var out []openaiMessage
 	normalized := anthropic.NormalizeMessagesForUpstream(r.Messages, passthroughServerTools, r.HasToolSearchBeta())
 
@@ -405,7 +409,7 @@ func convertMessages(r *anthropic.Request, passthroughServerTools bool) ([]opena
 		blocks := anthropic.BlocksForUpstream(m.Content.AsBlocks(), passthroughServerTools)
 		switch m.Role {
 		case "user":
-			msgs, err := convertUserBlocks(blocks)
+			msgs, err := convertUserBlocks(blocks, compactToolResults)
 			if err != nil {
 				return nil, err
 			}
@@ -423,7 +427,7 @@ func convertMessages(r *anthropic.Request, passthroughServerTools bool) ([]opena
 	return out, nil
 }
 
-func convertUserBlocks(blocks []anthropic.Block) ([]openaiMessage, error) {
+func convertUserBlocks(blocks []anthropic.Block, compactToolResults bool) ([]openaiMessage, error) {
 	var out []openaiMessage
 	var textParts []string
 	flush := func() {
@@ -442,7 +446,7 @@ func convertUserBlocks(blocks []anthropic.Block) ([]openaiMessage, error) {
 				continue
 			}
 			flush()
-			text, err := anthropic.ToolResultText(b.Content)
+			text, err := anthropic.ToolResultTextForUpstream(b.Content, compactToolResults)
 			if err != nil {
 				return nil, err
 			}

@@ -138,6 +138,31 @@ func TestBuildRequestPassesServerToolsWhenExperimental(t *testing.T) {
 	}
 }
 
+func TestBuildRequestCompactsToolResultsWhenEnabled(t *testing.T) {
+	longOutput := strings.Repeat("line\n", 300)
+	raw, err := json.Marshal(longOutput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := &anthropic.Request{Messages: []anthropic.Message{
+		{Role: "assistant", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "tool_use", ID: "call_1", Name: "Bash", Input: json.RawMessage(`{"cmd":"yes"}`)}}}},
+		{Role: "user", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "tool_result", ToolUseID: "call_1", Content: raw}}}},
+	}}
+
+	body, _, err := buildRequestWithOptions(req, "gpt", true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages := body["messages"].([]openaiMessage)
+	if len(messages) != 2 {
+		t.Fatalf("messages = %+v", messages)
+	}
+	content := messages[1].Content.(string)
+	if !strings.Contains(content, "tool output compacted") || len(content) >= len(longOutput) {
+		t.Fatalf("tool result not compacted: len=%d content=%q", len(content), content)
+	}
+}
+
 func TestStreamEmitsValidNativeToolCall(t *testing.T) {
 	stream, err := os.ReadFile("testdata/native_tool_call/upstream.sse")
 	if err != nil {
