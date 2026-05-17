@@ -797,7 +797,7 @@ func TestBuildRequestCompactsToolResultsWhenEnabled(t *testing.T) {
 		{Role: "user", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "tool_result", ToolUseID: "call_1", Content: raw}}}},
 	}}
 
-	body, _, err := buildRequestWithOptions(req, "gpt", true, true, "", false)
+	body, _, err := buildRequestWithOptions(req, "gpt", true, true, "", false, "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -843,7 +843,7 @@ func TestBuildRequestUsesFunctionModeForCustomTools(t *testing.T) {
 			{Role: "user", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "tool_result", ToolUseID: "call_1", Content: json.RawMessage(`"ok"`)}}}},
 		},
 	}
-	body, _, err := buildRequestWithOptions(req, "gpt", false, false, "function", false)
+	body, _, err := buildRequestWithOptions(req, "gpt", false, false, "function", false, "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -878,7 +878,7 @@ func TestBuildRequestDeclaresMCPToolsAsNamespaceWhenEnabled(t *testing.T) {
 			{Role: "assistant", Content: anthropic.Content{Blocks: []anthropic.Block{{Type: "tool_use", ID: "call_1", Name: "mcp__calendar__create_event", Input: json.RawMessage(`{"title":"demo"}`)}}}},
 		},
 	}
-	body, _, err := buildRequestWithOptions(req, "gpt", true, false, "", true)
+	body, _, err := buildRequestWithOptions(req, "gpt", true, false, "", true, "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

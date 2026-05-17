@@ -128,9 +128,9 @@ func (a *Adapter) streamOnce(
 	var aliases map[string]map[string]string
 	mode := responsesCustomToolMode(a.pc.ResponsesCustomToolMode)
 	if chained {
-		body, aliases, err = buildTailRequestWithOptions(bodyReq, upstreamModel, a.pc.ExperimentalPassthroughServerTools, a.pc.CompactToolResults, mode, a.pc.ResponsesNamespaceTools, lookup.Chain.CallKinds)
+		body, aliases, err = buildTailRequestWithOptions(bodyReq, upstreamModel, a.pc.ExperimentalPassthroughServerTools, a.pc.CompactToolResults, mode, a.pc.ResponsesNamespaceTools, lookup.Chain.CallKinds, a.pc.ServiceTier, a.pc.ResponsesReasoningSummary, a.pc.ResponsesParallelToolCalls)
 	} else {
-		body, aliases, err = buildRequestWithOptions(bodyReq, upstreamModel, a.pc.ExperimentalPassthroughServerTools, a.pc.CompactToolResults, mode, a.pc.ResponsesNamespaceTools)
+		body, aliases, err = buildRequestWithOptions(bodyReq, upstreamModel, a.pc.ExperimentalPassthroughServerTools, a.pc.CompactToolResults, mode, a.pc.ResponsesNamespaceTools, a.pc.ServiceTier, a.pc.ResponsesReasoningSummary, a.pc.ResponsesParallelToolCalls)
 	}
 	if err != nil {
 		return err
@@ -759,19 +759,19 @@ func buildRequest(r *anthropic.Request, model string, passthroughServerTools boo
 }
 
 func buildRequestWithAliases(r *anthropic.Request, model string, passthroughServerTools bool) (map[string]any, map[string]map[string]string, error) {
-	return buildRequestWithOptions(r, model, passthroughServerTools, false, "", false)
+	return buildRequestWithOptions(r, model, passthroughServerTools, false, "", false, "", "", nil)
 }
 
-func buildRequestWithOptions(r *anthropic.Request, model string, passthroughServerTools, compactToolResults bool, customToolMode string, namespaceTools bool) (map[string]any, map[string]map[string]string, error) {
-	return buildRequestWithNormalizer(r, model, passthroughServerTools, compactToolResults, responsesCustomToolMode(customToolMode), namespaceTools, nil, anthropic.NormalizeMessagesForUpstream)
+func buildRequestWithOptions(r *anthropic.Request, model string, passthroughServerTools, compactToolResults bool, customToolMode string, namespaceTools bool, serviceTier string, reasoningSummary string, parallelToolCalls *bool) (map[string]any, map[string]map[string]string, error) {
+	return buildRequestWithNormalizer(r, model, passthroughServerTools, compactToolResults, responsesCustomToolMode(customToolMode), namespaceTools, nil, anthropic.NormalizeMessagesForUpstream, serviceTier, reasoningSummary, parallelToolCalls)
 }
 
 func buildTailRequestWithAliases(r *anthropic.Request, model string, passthroughServerTools bool) (map[string]any, map[string]map[string]string, error) {
-	return buildTailRequestWithOptions(r, model, passthroughServerTools, false, "", false, nil)
+	return buildTailRequestWithOptions(r, model, passthroughServerTools, false, "", false, nil, "", "", nil)
 }
 
-func buildTailRequestWithOptions(r *anthropic.Request, model string, passthroughServerTools, compactToolResults bool, customToolMode string, namespaceTools bool, priorCallKinds map[string]string) (map[string]any, map[string]map[string]string, error) {
-	return buildRequestWithNormalizer(r, model, passthroughServerTools, compactToolResults, responsesCustomToolMode(customToolMode), namespaceTools, priorCallKinds, anthropic.NormalizePreviousResponseTail)
+func buildTailRequestWithOptions(r *anthropic.Request, model string, passthroughServerTools, compactToolResults bool, customToolMode string, namespaceTools bool, priorCallKinds map[string]string, serviceTier string, reasoningSummary string, parallelToolCalls *bool) (map[string]any, map[string]map[string]string, error) {
+	return buildRequestWithNormalizer(r, model, passthroughServerTools, compactToolResults, responsesCustomToolMode(customToolMode), namespaceTools, priorCallKinds, anthropic.NormalizePreviousResponseTail, serviceTier, reasoningSummary, parallelToolCalls)
 }
 
 func buildRequestWithNormalizer(
@@ -783,6 +783,9 @@ func buildRequestWithNormalizer(
 	namespaceTools bool,
 	priorCallKinds map[string]string,
 	normalize func([]anthropic.Message, bool, bool) []anthropic.Message,
+	serviceTier string,
+	reasoningSummary string,
+	parallelToolCalls *bool,
 ) (map[string]any, map[string]map[string]string, error) {
 	if fields := r.UnsupportedOpenAIFields(); len(fields) > 0 {
 		return nil, nil, fmt.Errorf("openai_responses does not support Anthropic-only fields: %s", strings.Join(fields, ", "))
@@ -811,7 +814,7 @@ func buildRequestWithNormalizer(
 	if sysText = responsesInstructions(sysText, len(anthropic.ToolsForUpstream(r.Tools, passthroughServerTools)) > 0 && !isToolChoiceNone(r.ToolChoice)); sysText != "" {
 		body["instructions"] = sysText
 	}
-	aliases, err := applyCommonFields(body, r, passthroughServerTools, customToolMode, namespaceTools)
+	aliases, err := applyCommonFields(body, r, passthroughServerTools, customToolMode, namespaceTools, serviceTier, reasoningSummary, parallelToolCalls)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -824,7 +827,7 @@ func responsesInstructions(sysText string, hasTools bool) string {
 	return provider.InstructionsWithToolUseBridge(sysText, hasTools)
 }
 
-func applyCommonFields(body map[string]any, r *anthropic.Request, passthroughServerTools bool, customToolMode string, namespaceTools bool) (map[string]map[string]string, error) {
+func applyCommonFields(body map[string]any, r *anthropic.Request, passthroughServerTools bool, customToolMode string, namespaceTools bool, serviceTier string, reasoningSummary string, parallelToolCalls *bool) (map[string]map[string]string, error) {
 	aliases := map[string]map[string]string{}
 	if r.MaxTokens > 0 {
 		body["max_output_tokens"] = r.MaxTokens
@@ -833,7 +836,14 @@ func applyCommonFields(body map[string]any, r *anthropic.Request, passthroughSer
 		body["top_p"] = *r.TopP
 	}
 	if effort, ok := r.ReasoningEffort(); ok {
-		body["reasoning"] = map[string]any{"effort": effort}
+		reasoning := map[string]any{"effort": effort}
+		if reasoningSummary != "" {
+			reasoning["summary"] = reasoningSummary
+		}
+		body["reasoning"] = reasoning
+		body["include"] = []string{"reasoning.encrypted_content"}
+	} else if reasoningSummary != "" {
+		body["reasoning"] = map[string]any{"summary": reasoningSummary}
 		body["include"] = []string{"reasoning.encrypted_content"}
 	}
 	text, err := responsesTextFormat(r)
@@ -844,6 +854,12 @@ func applyCommonFields(body map[string]any, r *anthropic.Request, passthroughSer
 		body["text"] = text
 	}
 	body["parallel_tool_calls"] = false
+	if parallelToolCalls != nil {
+		body["parallel_tool_calls"] = *parallelToolCalls
+	}
+	if serviceTier != "" {
+		body["service_tier"] = serviceTier
+	}
 	if _, set := body["store"]; !set {
 		body["store"] = false
 	}

@@ -29,8 +29,15 @@ type Request struct {
 	// ContextManagement and ExtraFields keep Claude Code beta/body params intact
 	// for native Anthropic egress. OpenAI adapters ignore context_management and
 	// reject unknown extra request fields.
-	ContextManagement json.RawMessage            `json:"context_management,omitempty"`
-	ExtraFields       map[string]json.RawMessage `json:"-"`
+	ContextManagement  json.RawMessage            `json:"context_management,omitempty"`
+	StructuredOutputs  json.RawMessage            `json:"structured_outputs,omitempty"`
+	Effort             json.RawMessage            `json:"effort,omitempty"`
+	TaskBudgets        json.RawMessage            `json:"task_budgets,omitempty"`
+	PromptCachingScope json.RawMessage            `json:"prompt_caching_scope,omitempty"`
+	ExtendedCacheTTL   json.RawMessage            `json:"extended_cache_ttl,omitempty"`
+	Speed              json.RawMessage            `json:"speed,omitempty"`
+	RedactThinking     json.RawMessage            `json:"redact_thinking,omitempty"`
+	ExtraFields        map[string]json.RawMessage `json:"-"`
 }
 
 // OutputConfig carries Anthropic output configuration fields.
@@ -88,6 +95,8 @@ func knownRequestFields() []string {
 		"model", "max_tokens", "system", "messages", "tools", "tool_choice",
 		"temperature", "top_p", "top_k", "stop_sequences", "stream",
 		"thinking", "output_config", "metadata", "betas", "context_management",
+		"structured_outputs", "effort", "task_budgets", "prompt_caching_scope",
+		"extended_cache_ttl", "speed", "redact_thinking",
 	}
 }
 
@@ -140,10 +149,21 @@ func (o *OutputConfig) RawField(name string) json.RawMessage {
 }
 
 func (r *Request) ReasoningEffort() (string, bool) {
-	if r == nil || r.OutputConfig == nil || r.OutputConfig.Effort == nil {
+	if r == nil {
 		return "", false
 	}
-	switch v := r.OutputConfig.Effort.(type) {
+	var effort any
+	if r.OutputConfig != nil && r.OutputConfig.Effort != nil {
+		effort = r.OutputConfig.Effort
+	} else if len(r.Effort) > 0 {
+		if err := json.Unmarshal(r.Effort, &effort); err != nil {
+			return "", false
+		}
+	}
+	if effort == nil {
+		return "", false
+	}
+	switch v := effort.(type) {
 	case string:
 		switch strings.ToLower(v) {
 		case "low", "medium", "high":

@@ -160,10 +160,10 @@ func TestNormalizeMessagesForUpstreamRepairsTranscript(t *testing.T) {
 
 func TestRequestPreservesBetaAndExtraBodyFields(t *testing.T) {
 	var req Request
-	if err := json.Unmarshal([]byte(`{"model":"claude","messages":[],"betas":["advanced-tool-use-2025-11-20"],"context_management":{"edits":[{"type":"clear"}]},"speed":"fast","output_config":{"effort":"high","format":{"type":"json_schema","schema":{"type":"object"}}}}`), &req); err != nil {
+	if err := json.Unmarshal([]byte(`{"model":"claude","messages":[],"betas":["advanced-tool-use-2025-11-20"],"context_management":{"edits":[{"type":"clear"}]},"speed":"fast","task_budgets":{"Bash":100},"prompt_caching_scope":"session","extended_cache_ttl":"1h","redact_thinking":true,"structured_outputs":true,"effort":"high","output_config":{"effort":"high","format":{"type":"json_schema","schema":{"type":"object"}}},"unknown":"value"}`), &req); err != nil {
 		t.Fatal(err)
 	}
-	if !req.HasToolSearchBeta() || len(req.ContextManagement) == 0 || len(req.ExtraFields["speed"]) == 0 {
+	if !req.HasToolSearchBeta() || len(req.ContextManagement) == 0 || len(req.Speed) == 0 || len(req.TaskBudgets) == 0 || len(req.PromptCachingScope) == 0 || len(req.ExtendedCacheTTL) == 0 || len(req.RedactThinking) == 0 || len(req.StructuredOutputs) == 0 || len(req.Effort) == 0 || len(req.ExtraFields["unknown"]) == 0 {
 		t.Fatalf("request beta/body fields not captured: %+v", req)
 	}
 	if req.OutputConfig == nil || req.OutputConfig.RawField("format") == nil {
@@ -173,12 +173,12 @@ func TestRequestPreservesBetaAndExtraBodyFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"betas"`, `"context_management"`, `"speed"`, `"format"`} {
+	for _, want := range []string{`"betas"`, `"context_management"`, `"speed"`, `"task_budgets"`, `"prompt_caching_scope"`, `"extended_cache_ttl"`, `"redact_thinking"`, `"structured_outputs"`, `"effort"`, `"format"`, `"unknown"`} {
 		if !strings.Contains(string(raw), want) {
 			t.Fatalf("marshaled request missing %s: %s", want, raw)
 		}
 	}
-	if got := req.UnsupportedOpenAIFields(); !reflect.DeepEqual(got, []string{"speed"}) {
+	if got := req.UnsupportedOpenAIFields(); !reflect.DeepEqual(got, []string{"unknown"}) {
 		t.Fatalf("unsupported openai fields = %+v", got)
 	}
 }
