@@ -116,7 +116,7 @@ ship the `relaycode` binary, `relaycode.example.yaml`, `README.md`, and
 Linux / macOS:
 
 ```bash
-VERSION=1.4.1
+VERSION=1.4.2
 curl -L -o relaycode.tar.gz \
   "https://github.com/5nYqnHvk/RelayCode/releases/download/${VERSION}/relaycode-${VERSION}-linux-amd64.tar.gz"
 tar -xzf relaycode.tar.gz
@@ -153,11 +153,14 @@ Point Claude Code at RelayCode:
 
 ```bash
 export ANTHROPIC_BASE_URL=http://127.0.0.1:8080
-export ANTHROPIC_AUTH_TOKEN=freecc   # match server.auth_token when configured
+export ANTHROPIC_AUTH_TOKEN=freecc   # match server.network.auth_token when configured
+export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
 claude
 ```
 
-If `server.auth_token` is empty, RelayCode does not require client auth.
+If `server.network.auth_token` is empty, RelayCode does not require client auth.
+Set `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` or Claude Code's `/model`
+picker will not load RelayCode's custom model list.
 
 Health check:
 
@@ -209,69 +212,106 @@ internal/webtools/              local web_search/web_fetch implementation
 
 ```yaml
 server:
-  host: 127.0.0.1
-  port: 8080
-  auth_token: ""   # when non-empty, clients must send matching x-api-key / Authorization
-
-  # Local Anthropic web_search/web_fetch handler. Disabled by default because it
-  # performs outbound HTTP from the proxy. Runs only when tool_choice forces it.
-  enable_web_server_tools: false
-  web_fetch_allowed_schemes: http,https
-  web_fetch_allow_private_networks: false
-
-  # Claude Code fast-path optimizations. Disable individually for debugging.
-  fast_prefix_detection: true
-  enable_network_probe_mock: true
-  enable_title_generation_skip: true
-  enable_suggestion_mode_skip: true
-  enable_filepath_extraction_mock: true
-  log_request_snapshots: false
-  compact_tool_results: false
-  enable_update_notification: false
-  # update_check_url: https://api.github.com/repos/5nYqnHvk/RelayCode/releases/latest
-  # update_check_timeout_seconds: 3
-  responses_session_store_path: ""  # optional durable Responses session/cache metadata JSON
+  network:
+    host: 127.0.0.1
+    port: 8080
+    auth_token: ""   # when non-empty, clients must send matching x-api-key / Authorization
+  web_tools:
+    # Local Anthropic web_search/web_fetch handler. Disabled by default because it
+    # performs outbound HTTP from the proxy. Runs only when tool_choice forces it.
+    enable: false
+    allowed_schemes: http,https
+    allow_private_networks: false
+  claude_code:
+    # Claude Code fast-path optimizations. Disable individually for debugging.
+    fast_prefix_detection: true
+    enable_network_probe_mock: true
+    enable_title_generation_skip: true
+    enable_suggestion_mode_skip: true
+    enable_filepath_extraction_mock: true
+  logging:
+    log_request_snapshots: false   # safe shape-only request logs; no raw prompt text
+    compact_tool_results: false    # compact long tool output before replaying upstream
+  updates:
+    enable_notification: false # check GitHub latest release tag on startup
+    # check_url: https://api.github.com/repos/5nYqnHvk/RelayCode/releases/latest
+    # check_timeout_seconds: 3
+  responses:
+    session_store_path: "" # optional durable Responses session/cache metadata JSON
 
 routes:
-  - match: "opus"
+  - match: "claude/opus-4-7"
     provider: openai_responses
     model: gpt-5.5
-  - match: "sonnet"
+  - match: "claude/sonnet-4-6"
+    provider: openai_responses
+    model: gpt-5.4
+  - match: "claude/haiku-4-5"
+    provider: openai_responses
+    model: gpt-5.4
+  - match: "claude/test"
     provider: openai_responses
     model: gpt-5.4
   - match: "*"
-    provider: deepseek_chat
-    model: deepseek-chat
+    provider: openai_responses
+    model: gpt-5.4
+
+tool_validation:
+  unknown_tools: drop
+  invalid_known_tools: warn
+  malformed_arguments: repair
 
 providers:
   openai_responses:
-    kind: openai_responses
-    base_url: https://api.openai.com/v1
-    api_key: "${OPENAI_API_KEY}"
-    # http_timeout_seconds: 300
-    # http_proxy: "${HTTPS_PROXY}"
-    # max_retries: 2
-    # max_concurrency: 4
-    # codex_auth_path: /home/you/.codex/auth.json  # Codex auth.json; overrides api_key when set
-    # experimental_previous_response_id: false
-    # experimental_passthrough_server_tools: true
-    # responses_custom_tool_mode: native # native|function; function downgrades custom tools for stricter gateways
-    # responses_namespace_tools: false # group mcp__server__tool declarations as Responses namespace tools
+    kind: openai_responses                 # POST /v1/responses
+    endpoint:
+      base_url: https://api.openai.com/v1
+      api_key: "${OPENAI_API_KEY}"
+      # Codex auth.json; overrides api_key when set.
+      # codex_auth_path: /home/you/.codex/auth.json
+    http:
+      # Upstream request timeout in seconds.
+      # timeout_seconds: 300
+      # HTTP proxy URL.
+      # proxy: "${HTTPS_PROXY}"
+      # Max retry count for upstream requests.
+      # max_retries: 2
+      # Max parallel upstream requests.
+      # max_concurrency: 4
+    experimental:
+      # Use non-Codex response chaining instead of replaying the full prefix.
+      # previous_response_id: false
+      # Pass server tools upstream without translation.
+      # passthrough_server_tools: true
+    responses:
+      # Use native Responses custom tools instead of function-style tools.
+      # custom_tool_mode: native
+      # Group mcp__server__tool entries as Responses namespace tools.
+      # namespace_tools: false
+      # Upstream service tier.
+      # service_tier: priority
+      # Upstream reasoning summary mode.
+      # reasoning_summary: none
+      # Enable parallel tool calls upstream.
+      # parallel_tool_calls: false
 
   openai_chat:
-    kind: openai_chat
-    base_url: https://api.openai.com/v1
-    api_key: "${OPENAI_API_KEY}"
+    kind: openai_chat                      # POST /v1/chat/completions
+    endpoint:
+      base_url: https://api.openai.com/v1
+      api_key: "${OPENAI_API_KEY}"
 
   anthropic_native:
-    kind: anthropic_messages
-    base_url: https://api.anthropic.com/v1
-    api_key: "${ANTHROPIC_API_KEY}"
+    kind: anthropic_messages               # POST /v1/messages, raw Anthropic SSE passthrough
+    endpoint:
+      base_url: https://api.anthropic.com/v1
+      api_key: "${ANTHROPIC_API_KEY}"
 
   deepseek_chat:
     kind: openai_chat
-    base_url: https://api.deepseek.com/v1
-    api_key: "${DEEPSEEK_API_KEY}"
+    endpoint:
+      base_url: https://api.deepseek.com/v1
+      api_key: "${DEEPSEEK_API_KEY}"
 ```
 
 Config rules:
@@ -283,6 +323,8 @@ Config rules:
   model name. First match wins.
 - Claude Code's model picker only keeps model ids that start with `claude` or
   `anthropic`, so virtual route ids should use one of those prefixes.
+- Set `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` or Claude Code will skip
+  gateway model discovery and `/model` will show only built-in models.
 - Fallback route with `match: "*"` is required.
 - `providers.<name>.kind` must be `openai_chat`, `openai_responses`, or
   `anthropic_messages`.
@@ -322,17 +364,17 @@ Optional knobs:
   default OpenAI base URL uses Codex's `https://chatgpt.com/backend-api/codex`
   base URL. When set, `codex_auth_path` takes precedence over `api_key`, and
   `api_key` may be omitted.
-- `experimental_previous_response_id`: enables HTTP `previous_response_id`
+- `experimental.previous_response_id`: enables HTTP `previous_response_id`
   chaining for backends that support it. Default stays off for Codex-style full
   replay with `prompt_cache_key`.
-- `experimental_passthrough_server_tools`: passes Anthropic server tool
+- `experimental.passthrough_server_tools`: passes Anthropic server tool
   declarations upstream instead of stripping unsupported server-tool entries.
   Keep off unless upstream provider understands those tool shapes.
-- `responses_custom_tool_mode: function`: sends schema-less Anthropic custom
+- `responses.custom_tool_mode: function`: sends schema-less Anthropic custom
   tools as normal Responses function tools with an `input` string argument for
   gateways that reject Responses `custom` tool declarations. Default `native`
   keeps OpenAI/Codex-style custom tools.
-- `responses_namespace_tools: true`: groups MCP-style tool names like
+- `responses.namespace_tools: true`: groups MCP-style tool names like
   `mcp__calendar__create_event` into Responses `namespace` declarations and
   maps namespace-qualified function calls back to Claude Code's full tool name.
   Default `false` keeps flat function tools for stricter gateways.
@@ -371,11 +413,11 @@ Behavior:
 | Custom function tools | Works | Converted to provider function tools. |
 | Tool argument streaming | Works | Mapped to Anthropic `input_json_delta`. |
 | Thinking/reasoning deltas | Works | Chat reasoning and Responses reasoning events map to `thinking_delta`. |
-| Local `web_search` / `web_fetch` | Optional | Requires `server.enable_web_server_tools: true` and forced Anthropic server tool choice. |
-| Provider-side server tools | Experimental | Use `experimental_passthrough_server_tools` only with compatible upstreams. |
+| Local `web_search` / `web_fetch` | Optional | Requires `server.web_tools.enable: true` and forced Anthropic server tool choice. |
+| Provider-side server tools | Experimental | Use `experimental.passthrough_server_tools` only with compatible upstreams. |
 | Images | Works | Claude Code base64 image blocks map to Chat `image_url` and Responses `input_image`. |
 | MCP/server-tool replay blocks | Degraded by default | Preserves model-visible history as text unless passthrough is enabled. |
-| Responses namespace tools | Optional | `responses_namespace_tools: true` groups `mcp__server__tool` names into Codex-style namespace declarations. |
+| Responses namespace tools | Optional | `responses.namespace_tools: true` groups `mcp__server__tool` names into Codex-style namespace declarations. |
 | Chained custom tool results | Works | Stored `call_id` metadata lets `previous_response_id` tails emit `custom_tool_call_output`. |
 
 Claude Code tool probe on 2026-05-14 verified safe, reversible client tools through RelayCode: agent dispatch, shell foreground/background tasks, file read/write/edit, notebook edit, task list/update/output/stop, cron create/list/delete, monitor events, web fetch/search, and plan-mode entry/exit. Worktree and dynamic loop wakeups were not exercised because they require explicit workflow context. `PushNotification` is a known caveat from that probe: the adapter dropped the tool call due schema validation.
@@ -419,15 +461,15 @@ Debug logging:
 
 - `RELAYCODE_DEBUG_REQUEST=1`: logs raw incoming `/v1/messages` JSON. Use only
   locally; this can include prompt text.
-- `server.log_request_snapshots: true` or `RELAYCODE_LOG_REQUEST_SNAPSHOTS=1`:
+- `server.logging.log_request_snapshots: true` or `RELAYCODE_LOG_REQUEST_SNAPSHOTS=1`:
   logs scrubbed request shape snapshots without raw prompt text.
-- `server.compact_tool_results: true`: sends compacted long tool/Bash outputs to
+- `server.logging.compact_tool_results: true`: sends compacted long tool/Bash outputs to
   OpenAI-compatible upstreams while keeping short outputs unchanged. Raw capture
   files remain full when `RELAYCODE_CAPTURE_DIR` is enabled.
-- `server.enable_update_notification: true`: checks the latest GitHub Release tag
+- `server.updates.enable_notification: true`: checks the latest GitHub Release tag
   once at startup and logs when a newer release exists. Source builds use version
   `dev` and skip update checks; release builds get their tag injected at build time.
-- `server.update_check_url` and `server.update_check_timeout_seconds`: override
+- `server.updates.check_url` and `server.updates.check_timeout_seconds`: override
   the release endpoint and timeout (defaults: GitHub latest release API, 3s).
 - `RELAYCODE_CAPTURE_DIR=/tmp/relaycode-capture`: writes one directory per
   request with `incoming_anthropic.json`, per-call `upstream/*/request.json`, and
@@ -436,7 +478,7 @@ Debug logging:
 
 ## Limitations
 
-- Session store is in memory by default. Set `server.responses_session_store_path`
+- Session store is in memory by default. Set `server.responses.session_store_path`
   to persist Responses session/cache metadata JSON and tool-call metadata across
   restarts.
 - Responses cache reuse relies on upstream prompt caching via `prompt_cache_key`.
@@ -450,23 +492,23 @@ Debug logging:
 
 ## Security
 
-- **Bind to localhost by default.** `server.host: 127.0.0.1` in
+- **Bind to localhost by default.** `server.network.host: 127.0.0.1` in
   `relaycode.example.yaml`. Bind to a public interface only when needed.
-- **Set `server.auth_token`** before exposing RelayCode beyond localhost.
+- **Set `server.network.auth_token`** before exposing RelayCode beyond localhost.
   Without it, any local process can reach the proxy.
 - **No TLS termination.** RelayCode serves plain HTTP. Terminate TLS at a
   reverse proxy (Caddy, nginx, Cloudflare Tunnel) when not on localhost.
 - **No prompt logging by default.** `RELAYCODE_DEBUG_REQUEST=1` prints raw
-  request bodies; use only locally for debugging. `log_request_snapshots`
-  prints shape-only snapshots without raw prompt text. `compact_tool_results`
+  request bodies; use only locally for debugging. `server.logging.log_request_snapshots`
+  prints shape-only snapshots without raw prompt text. `server.logging.compact_tool_results`
   can reduce long Bash/tool replay sent upstream. `RELAYCODE_CAPTURE_DIR` writes
   raw request/tool content for local fixture capture only.
-- **No outbound update checks by default.** `enable_update_notification` must be
+- **No outbound update checks by default.** `server.updates.enable_notification` must be
   set explicitly before RelayCode calls the GitHub Release API.
 - **Provider keys via env.** Prefer `${OPENAI_API_KEY}` / `${DEEPSEEK_API_KEY}`
   over pasting keys into `relaycode.yaml`.
 - **Session store is in memory by default.** Set
-  `server.responses_session_store_path` if you want Responses session/cache and
+  `server.responses.session_store_path` if you want Responses session/cache and
   tool-call metadata on disk.
 
 ## FAQ
@@ -501,13 +543,13 @@ normal Anthropic endpoint.
   instructions/tools fingerprint when available.
 - **`401`/`403` from upstream.** API key is missing or wrong. Check the env
   var referenced in `relaycode.yaml`.
-- **`429` from upstream.** Set `providers.<name>.max_retries` and
-  `max_concurrency` to smooth spikes.
-- **Long requests time out.** Bump `providers.<name>.http_timeout_seconds`.
+- **`429` from upstream.** Set `providers.<name>.http.max_retries` and
+  `http.max_concurrency` to smooth spikes.
+- **Long requests time out.** Bump `providers.<name>.http.timeout_seconds`.
 - **Image blocks.** OpenAI adapters now accept Claude Code base64 image blocks.
   Use native Anthropic only if you want direct passthrough.
 - **Forced `web_search` / `web_fetch` returns 400.** Enable
-  `server.enable_web_server_tools: true`. Default is off because the proxy
+  `server.web_tools.enable: true`. Default is off because the proxy
   makes outbound HTTP.
 
 ## Development
