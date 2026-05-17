@@ -62,20 +62,32 @@ providers:
     endpoint:
       base_url: https://api.openai.com/v1
       api_key: "${OPENAI_API_KEY}"
-      # codex_auth_path: /home/you/.codex/auth.json  # Codex auth.json; overrides api_key when set
+      # Codex auth.json; overrides api_key when set.
+      # codex_auth_path: /home/you/.codex/auth.json
     http:
+      # Upstream request timeout in seconds.
       # timeout_seconds: 300
+      # HTTP proxy URL.
       # proxy: "${HTTPS_PROXY}"
+      # Max retry count for upstream requests.
       # max_retries: 2
+      # Max parallel upstream requests.
       # max_concurrency: 4
     experimental:
-      # previous_response_id: false   # opt into non-Codex HTTP previous_response_id chaining
-      # passthrough_server_tools: true  # pass server tools upstream as-is
+      # Use non-Codex response chaining instead of replaying the full prefix.
+      # previous_response_id: false
+      # Pass server tools upstream without translation.
+      # passthrough_server_tools: true
     responses:
-      # custom_tool_mode: native # native|function; function downgrades custom tools for stricter gateways
-      # namespace_tools: false # group mcp__server__tool declarations as Responses namespace tools
+      # Use native Responses custom tools instead of function-style tools.
+      # custom_tool_mode: native
+      # Group mcp__server__tool entries as Responses namespace tools.
+      # namespace_tools: false
+      # Upstream service tier.
       # service_tier: priority
+      # Upstream reasoning summary mode.
       # reasoning_summary: none
+      # Enable parallel tool calls upstream.
       # parallel_tool_calls: false
 
   openai_chat:
