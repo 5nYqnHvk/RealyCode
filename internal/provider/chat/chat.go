@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -98,7 +99,7 @@ func (a *Adapter) Stream(ctx context.Context, req *anthropic.Request, upstreamMo
 		emitted bool
 	}
 	tools := map[int]*toolTrack{}
-	registry := toolguard.NewRegistry(req.Tools, a.pc.ExperimentalPassthroughServerTools, aliases)
+	registry := toolguard.NewRegistry(req.Tools, a.pc.ExperimentalPassthroughServerTools, aliases, a.pc.ToolValidation)
 
 	finishReason := ""
 	completionTokens := 0
@@ -127,6 +128,9 @@ func (a *Adapter) Stream(ctx context.Context, req *anthropic.Request, upstreamMo
 			}
 			restored, ok := registry.Validate(track.name, track.args)
 			if !ok {
+				if registry.Has(track.name) && registry.Policy().InvalidKnownTools == "warn" {
+					log.Printf("chat: DROPPED tool_call name=%s id=%s (schema validation failed)", track.name, track.id)
+				}
 				continue
 			}
 			b.StartTool(track.id, track.name)

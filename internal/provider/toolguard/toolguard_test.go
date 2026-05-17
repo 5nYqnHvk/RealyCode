@@ -85,6 +85,31 @@ func TestRegistryValidatesCommonConstraints(t *testing.T) {
 	}
 }
 
+func TestRegistryRepairsKnownArgumentAliases(t *testing.T) {
+	registry := NewRegistry([]anthropic.Tool{{
+		Name:        "WriteFile",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"filepath":{"type":"string"}},"required":["filepath"],"additionalProperties":false}`),
+	}}, false, nil)
+
+	repaired, ok := registry.Validate("WriteFile", `{"path":"/tmp/a.txt","type":"file"}`)
+	if !ok {
+		t.Fatal("repairable args rejected")
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(repaired), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if parsed["filepath"] != "/tmp/a.txt" {
+		t.Fatalf("filepath not repaired: %s", repaired)
+	}
+	if _, has := parsed["path"]; has {
+		t.Fatalf("old path key retained: %s", repaired)
+	}
+	if _, has := parsed["type"]; has {
+		t.Fatalf("unknown type key retained: %s", repaired)
+	}
+}
+
 func TestRegistryStripsEmptyOptionalArgs(t *testing.T) {
 	registry := NewRegistry([]anthropic.Tool{{
 		Name: "Read",

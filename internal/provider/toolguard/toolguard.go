@@ -4,25 +4,48 @@ import (
 	"encoding/json"
 	"math"
 	"regexp"
+	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/5nYqnHvk/RelayCode/internal/anthropic"
+	"github.com/5nYqnHvk/RelayCode/internal/config"
 	"github.com/5nYqnHvk/RelayCode/internal/provider/toolargs"
 )
 
 type Registry struct {
 	tools   map[string]anthropic.Tool
 	aliases map[string]map[string]string
+	policy  config.ToolValidationConfig
 }
 
-func NewRegistry(tools []anthropic.Tool, passthroughServerTools bool, aliases map[string]map[string]string) *Registry {
-	out := &Registry{tools: map[string]anthropic.Tool{}, aliases: aliases}
+func NewRegistry(tools []anthropic.Tool, passthroughServerTools bool, aliases map[string]map[string]string, policy ...config.ToolValidationConfig) *Registry {
+	resolvedPolicy := config.ToolValidationConfig{UnknownTools: "drop", InvalidKnownTools: "warn", MalformedArguments: "repair"}
+	if len(policy) > 0 {
+		resolvedPolicy = policy[0]
+	}
+	out := &Registry{tools: map[string]anthropic.Tool{}, aliases: aliases, policy: resolvedPolicy}
 	for _, tool := range anthropic.ToolsForUpstream(tools, passthroughServerTools) {
 		if tool.Name != "" {
 			out.tools[tool.Name] = tool
 		}
 	}
 	return out
+}
+
+func (r *Registry) Has(toolName string) bool {
+	if r == nil {
+		return false
+	}
+	_, ok := r.tools[toolName]
+	return ok
+}
+
+func (r *Registry) Policy() config.ToolValidationConfig {
+	if r == nil {
+		return config.ToolValidationConfig{}
+	}
+	return r.policy
 }
 
 func (r *Registry) Validate(toolName, args string) (string, bool) {
@@ -49,6 +72,13 @@ func (r *Registry) Validate(toolName, args string) (string, bool) {
 		stripEmptyOptionalArgs(obj, tool.InputSchema)
 	}
 	if len(tool.InputSchema) > 0 && !validAgainstSchema(obj, tool.InputSchema) {
+		if r.policy.MalformedArguments == "repair" && repairObjectArgs(obj, tool.InputSchema) && validAgainstSchema(obj, tool.InputSchema) {
+			cleaned, err := json.Marshal(obj)
+			if err != nil {
+				return restored, true
+			}
+			return string(cleaned), true
+		}
 		return "", false
 	}
 	cleaned, err := json.Marshal(obj)
@@ -56,6 +86,72 @@ func (r *Registry) Validate(toolName, args string) (string, bool) {
 		return restored, true
 	}
 	return string(cleaned), true
+}
+
+func repairObjectArgs(obj map[string]any, rawSchema json.RawMessage) bool {
+	var schema map[string]any
+	if err := json.Unmarshal(rawSchema, &schema); err != nil {
+		return false
+	}
+	props, ok := schema["properties"].(map[string]any)
+	if !ok || len(props) == 0 {
+		return false
+	}
+	changed := false
+	renamed := false
+	for prop := range props {
+		if _, exists := obj[prop]; exists {
+			continue
+		}
+		candidate, ok := repairKeyCandidate(prop, obj, props)
+		if !ok {
+			continue
+		}
+		obj[prop] = obj[candidate]
+		delete(obj, candidate)
+		changed = true
+		renamed = true
+	}
+	if renamed {
+		for key := range obj {
+			if _, ok := props[key]; !ok {
+				delete(obj, key)
+				changed = true
+			}
+		}
+	}
+	if changed {
+		stripEmptyOptionalArgs(obj, rawSchema)
+	}
+	return changed
+}
+
+func repairKeyCandidate(prop string, obj map[string]any, props map[string]any) (string, bool) {
+	want := normalizeKey(prop)
+	matches := []string{}
+	for key := range obj {
+		if _, isKnown := props[key]; isKnown {
+			continue
+		}
+		got := normalizeKey(key)
+		if got == want || strings.Contains(want, got) || strings.Contains(got, want) {
+			matches = append(matches, key)
+		}
+	}
+	if len(matches) != 1 {
+		return "", false
+	}
+	return matches[0], true
+}
+
+func normalizeKey(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // Drop empty optional placeholders emitted by upstream models.

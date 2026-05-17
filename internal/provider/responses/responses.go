@@ -178,7 +178,7 @@ func (a *Adapter) streamOnce(
 	items := map[string]*itemState{}
 	emittedToolCall := false
 	emittedCallKinds := map[string]string{}
-	registry := toolguard.NewRegistry(req.Tools, a.pc.ExperimentalPassthroughServerTools, aliases)
+	registry := toolguard.NewRegistry(req.Tools, a.pc.ExperimentalPassthroughServerTools, aliases, a.pc.ToolValidation)
 
 	stripper := tagStripper{}
 	thinkParser := streamparse.ThinkTagParser{}
