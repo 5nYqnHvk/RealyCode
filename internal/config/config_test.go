@@ -31,7 +31,7 @@ func TestWriteExample(t *testing.T) {
 	}
 }
 
-func TestLoadParsesConfigAndExpandsEnv(t *testing.T) {
+func TestLoadParsesFlatConfigAndExpandsEnv(t *testing.T) {
 	t.Setenv("TEST_RELAYCODE_TOKEN", "secret-token")
 	t.Setenv("TEST_RELAYCODE_KEY", "secret-key")
 	t.Setenv("TEST_RELAYCODE_STORE", "/tmp/relaycode-sessions.json")
@@ -108,6 +108,129 @@ providers:
 	}
 	if cfg.Providers["openai_chat"].ExperimentalPassthroughServerTools {
 		t.Fatalf("openai_chat provider = %+v, want experimental passthrough disabled by default", cfg.Providers["openai_chat"])
+	}
+}
+
+func TestLoadParsesCategorizedConfigAndExpandsEnv(t *testing.T) {
+	t.Setenv("TEST_RELAYCODE_TOKEN", "secret-token")
+	t.Setenv("TEST_RELAYCODE_KEY", "secret-key")
+	t.Setenv("TEST_RELAYCODE_STORE", "/tmp/relaycode-sessions.json")
+
+	path := filepath.Join(t.TempDir(), "relaycode.yaml")
+	body := `server:
+  network:
+    host: 0.0.0.0
+    port: 9090
+    auth_token: "${TEST_RELAYCODE_TOKEN}"
+  web_tools:
+    enable: true
+    allowed_schemes: https
+    allow_private_networks: true
+  logging:
+    compact_tool_results: true
+  updates:
+    enable_notification: true
+    check_url: https://updates.example.test/latest
+    check_timeout_seconds: 9
+  responses:
+    session_store_path: "${TEST_RELAYCODE_STORE}"
+
+routes:
+  - match: "opus"
+    provider: openai_responses
+    model: gpt-strong
+  - match: "*"
+    provider: openai_chat
+    model: gpt-fallback
+
+providers:
+  openai_responses:
+    kind: openai_responses
+    endpoint:
+      base_url: https://api.example.com/v1/
+      api_key: "${TEST_RELAYCODE_KEY}"
+      codex_auth_path: /tmp/codex-auth.json
+    experimental:
+      passthrough_server_tools: true
+      previous_response_id: true
+    responses:
+      custom_tool_mode: function
+      namespace_tools: true
+  openai_chat:
+    kind: openai_chat
+    endpoint:
+      base_url: https://chat.example.com/v1
+      api_key: static-key
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Server.Host != "0.0.0.0" || cfg.Server.Port != 9090 || cfg.Server.AuthToken != "secret-token" ||
+		!cfg.Server.EnableWebServerTools ||
+		cfg.Server.WebFetchAllowedSchemes != "https" ||
+		!cfg.Server.WebFetchAllowPrivateNetworks ||
+		!cfg.Server.CompactToolResults ||
+		!cfg.Server.EnableUpdateNotification ||
+		cfg.Server.UpdateCheckURL != "https://updates.example.test/latest" ||
+		cfg.Server.UpdateCheckTimeoutSeconds != 9 ||
+		cfg.Server.ResponsesSessionStorePath != "/tmp/relaycode-sessions.json" {
+		t.Fatalf("Server = %+v", cfg.Server)
+	}
+	provider := cfg.Providers["openai_responses"]
+	if provider.Kind != KindOpenAIResponses ||
+		provider.BaseURL != "https://api.example.com/v1" ||
+		provider.APIKey != "secret-key" ||
+		!provider.ExperimentalPassthroughServerTools ||
+		!provider.ExperimentalPreviousResponseID ||
+		provider.ResponsesCustomToolMode != "function" ||
+		!provider.ResponsesNamespaceTools ||
+		provider.CodexAuthPath != "/tmp/codex-auth.json" {
+		t.Fatalf("openai_responses provider = %+v", provider)
+	}
+}
+
+func TestLoadPrefersCategorizedOverFlat(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "relaycode.yaml")
+	body := `server:
+  host: 127.0.0.1
+  network:
+    host: 0.0.0.0
+    port: 9090
+  logging:
+    compact_tool_results: true
+  compact_tool_results: false
+
+routes:
+  - match: "*"
+    provider: p
+    model: gpt
+
+providers:
+  p:
+    kind: openai_responses
+    base_url: https://api.example.com/v1
+    http:
+      max_retries: 5
+    max_retries: 2
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server.Host != "0.0.0.0" || cfg.Server.Port != 9090 || !cfg.Server.CompactToolResults {
+		t.Fatalf("Server = %+v", cfg.Server)
+	}
+	if cfg.Providers["p"].MaxRetries != 5 {
+		t.Fatalf("Provider = %+v", cfg.Providers["p"])
 	}
 }
 
@@ -207,6 +330,29 @@ providers:
     kind: openai_chat
     base_url: https://api.example.com/v1
     responses_custom_tool_mode: function
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "only valid for openai_responses") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestLoadRejectsCategorizedResponsesCustomToolModeOutsideResponsesProvider(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "relaycode.yaml")
+	body := `routes:
+  - match: "*"
+    provider: p
+    model: gpt
+providers:
+  p:
+    kind: openai_chat
+    endpoint:
+      base_url: https://api.example.com/v1
+    responses:
+      custom_tool_mode: function
 `
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)

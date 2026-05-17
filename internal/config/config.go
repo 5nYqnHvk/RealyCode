@@ -66,6 +66,134 @@ type ProviderConfig struct {
 	ResponsesCustomToolMode            string
 	ResponsesNamespaceTools            bool
 	CompactToolResults                 bool
+	ServiceTier                        string
+	ResponsesReasoningSummary          string
+	ResponsesParallelToolCalls         *bool
+}
+
+func lookupPath(m yamlMap, path ...string) (any, bool) {
+	cur := any(m)
+	for _, key := range path {
+		mm, ok := cur.(yamlMap)
+		if !ok {
+			return nil, false
+		}
+		cur, ok = mm[key]
+		if !ok {
+			return nil, false
+		}
+	}
+	return cur, true
+}
+
+func mapAt(m yamlMap, path ...string) (yamlMap, bool) {
+	v, ok := lookupPath(m, path...)
+	if !ok {
+		return nil, false
+	}
+	mm, ok := v.(yamlMap)
+	if !ok {
+		return nil, false
+	}
+	return mm, true
+}
+
+func stringAtPath(m yamlMap, path ...string) (string, bool) {
+	v, ok := lookupPath(m, path...)
+	if !ok {
+		return "", false
+	}
+	s, ok := v.(string)
+	if !ok {
+		return "", false
+	}
+	return s, true
+}
+
+func boolAtPath(m yamlMap, path ...string) (bool, bool) {
+	v, ok := lookupPath(m, path...)
+	if !ok {
+		return false, false
+	}
+	b, ok := v.(bool)
+	if !ok {
+		return false, false
+	}
+	return b, true
+}
+
+func intAtPath(m yamlMap, path ...string) (int, bool) {
+	v, ok := lookupPath(m, path...)
+	if !ok {
+		return 0, false
+	}
+	n, ok := v.(int)
+	if !ok {
+		return 0, false
+	}
+	return n, true
+}
+
+func boolPtrAtPath(m yamlMap, path ...string) (*bool, bool) {
+	v, ok := lookupPath(m, path...)
+	if !ok {
+		return nil, false
+	}
+	b, ok := v.(bool)
+	if !ok {
+		return nil, false
+	}
+	return &b, true
+}
+
+func stringAtAny(m yamlMap, nested []string, flat string) string {
+	if v, ok := stringAtPath(m, nested...); ok {
+		return v
+	}
+	if v, ok := m[flat].(string); ok {
+		return v
+	}
+	return ""
+}
+
+func boolAtAny(m yamlMap, nested []string, flat string) bool {
+	if v, ok := boolAtPath(m, nested...); ok {
+		return v
+	}
+	if v, ok := m[flat].(bool); ok {
+		return v
+	}
+	return false
+}
+
+func boolDefaultAny(m yamlMap, fallback bool, nested []string, flat string) bool {
+	if v, ok := boolAtPath(m, nested...); ok {
+		return v
+	}
+	if v, ok := m[flat].(bool); ok {
+		return v
+	}
+	return fallback
+}
+
+func intAtAny(m yamlMap, nested []string, flat string) int {
+	if v, ok := intAtPath(m, nested...); ok {
+		return v
+	}
+	if v, ok := m[flat].(int); ok {
+		return v
+	}
+	return 0
+}
+
+func boolPtrAtAny(m yamlMap, nested []string, flat string) *bool {
+	if v, ok := boolPtrAtPath(m, nested...); ok {
+		return v
+	}
+	if v, ok := m[flat].(bool); ok {
+		return &v
+	}
+	return nil
 }
 
 // Load reads the YAML config at path and validates it.
@@ -106,35 +234,36 @@ func fromDoc(doc yamlMap) (*Config, error) {
 	}
 
 	if srv, ok := doc["server"].(yamlMap); ok {
-		if v, ok := srv["host"].(string); ok && v != "" {
-			cfg.Server.Host = v
+		cfg.Server.Host = stringAtAny(srv, []string{"network", "host"}, "host")
+		if cfg.Server.Host == "" {
+			cfg.Server.Host = "127.0.0.1"
 		}
-		if v, ok := srv["port"].(int); ok {
+		if v := intAtAny(srv, []string{"network", "port"}, "port"); v != 0 {
 			cfg.Server.Port = v
 		}
-		if v, ok := srv["auth_token"].(string); ok {
+		if v := stringAtAny(srv, []string{"network", "auth_token"}, "auth_token"); v != "" {
 			cfg.Server.AuthToken = expandEnv(v)
 		}
-		cfg.Server.EnableWebServerTools = boolAt(srv, "enable_web_server_tools")
-		if v, ok := srv["web_fetch_allowed_schemes"].(string); ok && strings.TrimSpace(v) != "" {
+		cfg.Server.EnableWebServerTools = boolAtAny(srv, []string{"web_tools", "enable"}, "enable_web_server_tools")
+		if v := stringAtAny(srv, []string{"web_tools", "allowed_schemes"}, "web_fetch_allowed_schemes"); strings.TrimSpace(v) != "" {
 			cfg.Server.WebFetchAllowedSchemes = v
 		}
-		cfg.Server.WebFetchAllowPrivateNetworks = boolAt(srv, "web_fetch_allow_private_networks")
-		cfg.Server.FastPrefixDetection = boolDefault(srv, "fast_prefix_detection", cfg.Server.FastPrefixDetection)
-		cfg.Server.EnableNetworkProbeMock = boolDefault(srv, "enable_network_probe_mock", cfg.Server.EnableNetworkProbeMock)
-		cfg.Server.EnableTitleGenerationSkip = boolDefault(srv, "enable_title_generation_skip", cfg.Server.EnableTitleGenerationSkip)
-		cfg.Server.EnableSuggestionModeSkip = boolDefault(srv, "enable_suggestion_mode_skip", cfg.Server.EnableSuggestionModeSkip)
-		cfg.Server.EnableFilepathExtractionMock = boolDefault(srv, "enable_filepath_extraction_mock", cfg.Server.EnableFilepathExtractionMock)
-		cfg.Server.LogRequestSnapshots = boolAt(srv, "log_request_snapshots")
-		cfg.Server.CompactToolResults = boolAt(srv, "compact_tool_results")
-		cfg.Server.EnableUpdateNotification = boolAt(srv, "enable_update_notification")
-		if v, ok := srv["update_check_url"].(string); ok && strings.TrimSpace(v) != "" {
+		cfg.Server.WebFetchAllowPrivateNetworks = boolAtAny(srv, []string{"web_tools", "allow_private_networks"}, "web_fetch_allow_private_networks")
+		cfg.Server.FastPrefixDetection = boolDefaultAny(srv, cfg.Server.FastPrefixDetection, []string{"claude_code", "fast_prefix_detection"}, "fast_prefix_detection")
+		cfg.Server.EnableNetworkProbeMock = boolDefaultAny(srv, cfg.Server.EnableNetworkProbeMock, []string{"claude_code", "enable_network_probe_mock"}, "enable_network_probe_mock")
+		cfg.Server.EnableTitleGenerationSkip = boolDefaultAny(srv, cfg.Server.EnableTitleGenerationSkip, []string{"claude_code", "enable_title_generation_skip"}, "enable_title_generation_skip")
+		cfg.Server.EnableSuggestionModeSkip = boolDefaultAny(srv, cfg.Server.EnableSuggestionModeSkip, []string{"claude_code", "enable_suggestion_mode_skip"}, "enable_suggestion_mode_skip")
+		cfg.Server.EnableFilepathExtractionMock = boolDefaultAny(srv, cfg.Server.EnableFilepathExtractionMock, []string{"claude_code", "enable_filepath_extraction_mock"}, "enable_filepath_extraction_mock")
+		cfg.Server.LogRequestSnapshots = boolAtAny(srv, []string{"logging", "log_request_snapshots"}, "log_request_snapshots")
+		cfg.Server.CompactToolResults = boolAtAny(srv, []string{"logging", "compact_tool_results"}, "compact_tool_results")
+		cfg.Server.EnableUpdateNotification = boolAtAny(srv, []string{"updates", "enable_notification"}, "enable_update_notification")
+		if v := stringAtAny(srv, []string{"updates", "check_url"}, "update_check_url"); strings.TrimSpace(v) != "" {
 			cfg.Server.UpdateCheckURL = expandEnv(v)
 		}
-		if v, ok := srv["update_check_timeout_seconds"].(int); ok && v > 0 {
+		if v := intAtAny(srv, []string{"updates", "check_timeout_seconds"}, "update_check_timeout_seconds"); v > 0 {
 			cfg.Server.UpdateCheckTimeoutSeconds = v
 		}
-		if v, ok := srv["responses_session_store_path"].(string); ok {
+		if v := stringAtAny(srv, []string{"responses", "session_store_path"}, "responses_session_store_path"); v != "" {
 			cfg.Server.ResponsesSessionStorePath = expandEnv(v)
 		}
 	}
@@ -170,17 +299,20 @@ func fromDoc(doc yamlMap) (*Config, error) {
 		}
 		pc := ProviderConfig{
 			Kind:                               ProviderKind(stringAt(entry, "kind")),
-			BaseURL:                            strings.TrimRight(expandEnv(stringAt(entry, "base_url")), "/"),
-			APIKey:                             expandEnv(stringAt(entry, "api_key")),
-			ExperimentalPassthroughServerTools: boolAt(entry, "experimental_passthrough_server_tools"),
-			CodexAuthPath:                      expandEnv(stringAt(entry, "codex_auth_path")),
-			HTTPTimeoutSeconds:                 intAt(entry, "http_timeout_seconds"),
-			HTTPProxy:                          expandEnv(stringAt(entry, "http_proxy")),
-			MaxRetries:                         intAt(entry, "max_retries"),
-			MaxConcurrency:                     intAt(entry, "max_concurrency"),
-			ExperimentalPreviousResponseID:     boolAt(entry, "experimental_previous_response_id"),
-			ResponsesCustomToolMode:            strings.TrimSpace(stringAt(entry, "responses_custom_tool_mode")),
-			ResponsesNamespaceTools:            boolAt(entry, "responses_namespace_tools"),
+			BaseURL:                            strings.TrimRight(expandEnv(stringAtAny(entry, []string{"endpoint", "base_url"}, "base_url")), "/"),
+			APIKey:                             expandEnv(stringAtAny(entry, []string{"endpoint", "api_key"}, "api_key")),
+			ExperimentalPassthroughServerTools: boolAtAny(entry, []string{"experimental", "passthrough_server_tools"}, "experimental_passthrough_server_tools"),
+			CodexAuthPath:                      expandEnv(stringAtAny(entry, []string{"endpoint", "codex_auth_path"}, "codex_auth_path")),
+			HTTPTimeoutSeconds:                 intAtAny(entry, []string{"http", "timeout_seconds"}, "http_timeout_seconds"),
+			HTTPProxy:                          expandEnv(stringAtAny(entry, []string{"http", "proxy"}, "http_proxy")),
+			MaxRetries:                         intAtAny(entry, []string{"http", "max_retries"}, "max_retries"),
+			MaxConcurrency:                     intAtAny(entry, []string{"http", "max_concurrency"}, "max_concurrency"),
+			ExperimentalPreviousResponseID:     boolAtAny(entry, []string{"experimental", "previous_response_id"}, "experimental_previous_response_id"),
+			ResponsesCustomToolMode:            strings.TrimSpace(stringAtAny(entry, []string{"responses", "custom_tool_mode"}, "responses_custom_tool_mode")),
+			ResponsesNamespaceTools:            boolAtAny(entry, []string{"responses", "namespace_tools"}, "responses_namespace_tools"),
+			ServiceTier:                        strings.TrimSpace(stringAtAny(entry, []string{"responses", "service_tier"}, "service_tier")),
+			ResponsesReasoningSummary:          strings.TrimSpace(stringAtAny(entry, []string{"responses", "reasoning_summary"}, "responses_reasoning_summary")),
+			ResponsesParallelToolCalls:         boolPtrAtAny(entry, []string{"responses", "parallel_tool_calls"}, "responses_parallel_tool_calls"),
 		}
 		if pc.Kind != KindOpenAIChat && pc.Kind != KindOpenAIResponses && pc.Kind != KindAnthropicMessages {
 			return nil, fmt.Errorf("providers.%s: unknown kind %q (want openai_chat|openai_responses|anthropic_messages)", name, pc.Kind)
@@ -219,6 +351,15 @@ func (c *Config) validate() error {
 		if provider.ResponsesNamespaceTools && provider.Kind != KindOpenAIResponses {
 			return fmt.Errorf("providers.%s: responses_namespace_tools is only valid for openai_responses providers", name)
 		}
+		if provider.ServiceTier != "" && provider.Kind != KindOpenAIResponses {
+			return fmt.Errorf("providers.%s: service_tier is only valid for openai_responses providers", name)
+		}
+		if provider.ResponsesReasoningSummary != "" && provider.Kind != KindOpenAIResponses {
+			return fmt.Errorf("providers.%s: responses_reasoning_summary is only valid for openai_responses providers", name)
+		}
+		if provider.ResponsesParallelToolCalls != nil && provider.Kind != KindOpenAIResponses {
+			return fmt.Errorf("providers.%s: responses_parallel_tool_calls is only valid for openai_responses providers", name)
+		}
 	}
 	return nil
 }
@@ -242,6 +383,13 @@ func boolDefault(m yamlMap, key string, fallback bool) bool {
 		return v
 	}
 	return fallback
+}
+
+func boolPtr(m yamlMap, key string) *bool {
+	if v, ok := m[key].(bool); ok {
+		return &v
+	}
+	return nil
 }
 
 func intAt(m yamlMap, key string) int {
