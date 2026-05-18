@@ -17,6 +17,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/5nYqnHvk/RelayCode/internal/anthropic"
@@ -35,41 +36,79 @@ import (
 
 const maxRequestBodyBytes = 32 << 20
 
-type Server struct {
+type runtimeState struct {
 	cfg      *config.Config
 	router   *router.Router
 	adapters map[string]provider.Adapter // lazy, keyed by provider name in cfg
+}
+
+type Server struct {
+	state    atomic.Pointer[runtimeState]
 	mu       sync.Mutex
 	sessions *session.Store
 	addr     string
 }
 
 func New(cfg *config.Config) (*Server, error) {
-	for name, pc := range cfg.Providers {
-		if pc.Kind != config.KindOpenAIChat && pc.Kind != config.KindOpenAIResponses && pc.Kind != config.KindAnthropicMessages {
-			return nil, fmt.Errorf("provider %q: unsupported kind %q", name, pc.Kind)
-		}
+	st, err := buildRuntimeState(cfg)
+	if err != nil {
+		return nil, err
 	}
 	sessions, err := session.NewFileStore(cfg.Server.ResponsesSessionStorePath, 60*time.Minute, 1000)
 	if err != nil {
 		return nil, fmt.Errorf("responses session store: %w", err)
 	}
-	return &Server{
+	s := &Server{
+		sessions: sessions,
+		addr:     net.JoinHostPort(cfg.Server.Host, strconv.Itoa(cfg.Server.Port)),
+	}
+	s.state.Store(st)
+	return s, nil
+}
+
+func buildRuntimeState(cfg *config.Config) (*runtimeState, error) {
+	for name, pc := range cfg.Providers {
+		if pc.Kind != config.KindOpenAIChat && pc.Kind != config.KindOpenAIResponses && pc.Kind != config.KindAnthropicMessages {
+			return nil, fmt.Errorf("provider %q: unsupported kind %q", name, pc.Kind)
+		}
+	}
+	return &runtimeState{
 		cfg:      cfg,
 		router:   router.New(cfg),
 		adapters: map[string]provider.Adapter{},
-		sessions: sessions,
-		addr:     net.JoinHostPort(cfg.Server.Host, strconv.Itoa(cfg.Server.Port)),
 	}, nil
 }
 
-func (s *Server) adapterFor(name string, pc config.ProviderConfig) (provider.Adapter, error) {
+func (s *Server) currentState() *runtimeState {
+	return s.state.Load()
+}
+
+func (s *Server) Reload(cfg *config.Config) error {
+	old := s.currentState()
+	if old == nil {
+		return errors.New("runtime state not initialized")
+	}
+	if old.cfg.Server.Host != cfg.Server.Host || old.cfg.Server.Port != cfg.Server.Port {
+		return errors.New("server host/port changes require restart")
+	}
+	if old.cfg.Server.ResponsesSessionStorePath != cfg.Server.ResponsesSessionStorePath {
+		return errors.New("responses session store path changes require restart")
+	}
+	st, err := buildRuntimeState(cfg)
+	if err != nil {
+		return err
+	}
+	s.state.Store(st)
+	return nil
+}
+
+func (s *Server) adapterFor(st *runtimeState, name string, pc config.ProviderConfig) (provider.Adapter, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	pc.CompactToolResults = s.cfg.Server.CompactToolResults
-	pc.ToolValidation = s.cfg.ToolValidation
+	pc.CompactToolResults = st.cfg.Server.CompactToolResults
+	pc.ToolValidation = st.cfg.ToolValidation
 
-	if a, ok := s.adapters[name]; ok {
+	if a, ok := st.adapters[name]; ok {
 		return a, nil
 	}
 	var (
@@ -92,7 +131,7 @@ func (s *Server) adapterFor(name string, pc config.ProviderConfig) (provider.Ada
 	if aware, ok := a.(provider.SessionAware); ok {
 		aware.SetSession(s.sessions, name)
 	}
-	s.adapters[name] = a
+	st.adapters[name] = a
 	return a, nil
 }
 
@@ -132,11 +171,12 @@ func (s *Server) Run(ctx context.Context) error {
 }
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
+	st := s.currentState()
 	if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if s.cfg.Server.AuthToken != "" && !authOK(r, s.cfg.Server.AuthToken) {
+	if st.cfg.Server.AuthToken != "" && !authOK(r, st.cfg.Server.AuthToken) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -152,7 +192,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		CreatedAt   string `json:"created_at"`
 		OwnedBy     string `json:"owned_by,omitempty"`
 	}
-	models := s.router.Models()
+	models := st.router.Models()
 	data := make([]modelView, 0, len(models))
 	for _, model := range models {
 		data = append(data, modelView{
@@ -184,11 +224,12 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleClaudeBootstrap(w http.ResponseWriter, r *http.Request) {
+	st := s.currentState()
 	if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if s.cfg.Server.AuthToken != "" && !authOK(r, s.cfg.Server.AuthToken) {
+	if st.cfg.Server.AuthToken != "" && !authOK(r, st.cfg.Server.AuthToken) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -202,7 +243,7 @@ func (s *Server) handleClaudeBootstrap(w http.ResponseWriter, r *http.Request) {
 		Name        string `json:"name"`
 		Description string `json:"description"`
 	}
-	models := s.router.Models()
+	models := st.router.Models()
 	options := make([]modelOption, 0, len(models))
 	for _, model := range models {
 		options = append(options, modelOption{
@@ -217,11 +258,12 @@ func (s *Server) handleClaudeBootstrap(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
+	st := s.currentState()
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if s.cfg.Server.AuthToken != "" && !authOK(r, s.cfg.Server.AuthToken) {
+	if st.cfg.Server.AuthToken != "" && !authOK(r, st.cfg.Server.AuthToken) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -263,13 +305,14 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
+	st := s.currentState()
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	if s.cfg.Server.AuthToken != "" {
-		if !authOK(r, s.cfg.Server.AuthToken) {
+	if st.cfg.Server.AuthToken != "" {
+		if !authOK(r, st.cfg.Server.AuthToken) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -294,7 +337,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if os.Getenv("RELAYCODE_DEBUG_REQUEST") == "1" {
 		log.Printf("incoming raw body (%d bytes): %s", len(rawBody), string(rawBody))
 	}
-	if s.cfg.Server.LogRequestSnapshots || os.Getenv("RELAYCODE_LOG_REQUEST_SNAPSHOTS") == "1" {
+	if st.cfg.Server.LogRequestSnapshots || os.Getenv("RELAYCODE_LOG_REQUEST_SNAPSHOTS") == "1" {
 		log.Printf("incoming request snapshot: %s", anthropic.SnapshotJSON(&req))
 	}
 	if req.Model == "" {
@@ -303,7 +346,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if isModelValidationProbe(&req) {
-		if _, err := s.router.Resolve(req.Model); err != nil {
+		if _, err := st.router.Resolve(req.Model); err != nil {
 			http.Error(w, fmt.Sprintf(`{"type":"error","error":{"type":"invalid_request_error","message":%q}}`, err.Error()), http.StatusBadRequest)
 			return
 		}
@@ -324,7 +367,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if resp, ok := optim.Try(&req, s.cfg.Server); ok {
+	if resp, ok := optim.Try(&req, st.cfg.Server); ok {
 		sw := sse.NewWriter(w)
 		builder := sse.NewBuilder(sw, newMessageID(), req.Model, resp.InputTokens)
 		builder.Start()
@@ -334,30 +377,30 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resolved, err := s.router.Resolve(req.Model)
+	resolved, err := st.router.Resolve(req.Model)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"type":"error","error":{"type":"invalid_request_error","message":%q}}`, err.Error()), http.StatusBadRequest)
 		return
 	}
 
 	if webtools.IsWebServerToolRequest(&req) {
-		if !s.cfg.Server.EnableWebServerTools {
+		if !st.cfg.Server.EnableWebServerTools {
 			http.Error(w, `{"type":"error","error":{"type":"invalid_request_error","message":"tool_choice forces Anthropic web server tool, but local web server tools are disabled (enable_web_server_tools: false)"}}`, http.StatusBadRequest)
 			return
 		}
 		sw := sse.NewWriter(w)
 		builder := sse.NewBuilder(sw, newMessageID(), req.Model, estimateInputTokens(&req))
-		policy := webtools.NewEgressPolicy(s.cfg.Server.WebFetchAllowedSchemes, s.cfg.Server.WebFetchAllowPrivateNetworks)
+		policy := webtools.NewEgressPolicy(st.cfg.Server.WebFetchAllowedSchemes, st.cfg.Server.WebFetchAllowPrivateNetworks)
 		webtools.StreamWebServerToolResponse(r.Context(), &req, builder, policy, webtools.DefaultRunner())
 		return
 	}
 
-	if resolved.Provider.Kind == config.KindOpenAIChat && webtools.HasListedAnthropicWebServerTools(&req) && !s.cfg.Server.EnableWebServerTools {
+	if resolved.Provider.Kind == config.KindOpenAIChat && webtools.HasListedAnthropicWebServerTools(&req) && !st.cfg.Server.EnableWebServerTools {
 		http.Error(w, `{"type":"error","error":{"type":"invalid_request_error","message":"OpenAI Chat upstreams cannot use listed Anthropic web server tools (web_search / web_fetch) without the local web server tool handler"}}`, http.StatusBadRequest)
 		return
 	}
 
-	adapter, err := s.adapterFor(resolved.ProviderName, resolved.Provider)
+	adapter, err := s.adapterFor(st, resolved.ProviderName, resolved.Provider)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"type":"error","error":{"type":"invalid_request_error","message":%q}}`, err.Error()), http.StatusInternalServerError)
 		return

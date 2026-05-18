@@ -76,7 +76,30 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	hupCh := make(chan os.Signal, 1)
+	signal.Notify(hupCh, syscall.SIGHUP)
+	defer signal.Stop(hupCh)
 	updatecheck.MaybeNotify(ctx, cfg.Server)
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-hupCh:
+				newCfg, err := config.Load(*configPath)
+				if err != nil {
+					log.Printf("config reload failed: %v", err)
+					continue
+				}
+				if err := srv.Reload(newCfg); err != nil {
+					log.Printf("config reload rejected: %v", err)
+					continue
+				}
+				log.Printf("config reloaded from %s (routes=%d providers=%d)", *configPath, len(newCfg.Routes), len(newCfg.Providers))
+			}
+		}
+	}()
 
 	log.Printf("relaycode listening on %s (routes=%d)", srv.Addr(), len(cfg.Routes))
 	if err := srv.Run(ctx); err != nil {

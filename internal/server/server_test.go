@@ -121,6 +121,137 @@ func TestHandleModelsRequiresAuth(t *testing.T) {
 	}
 }
 
+func TestReloadUpdatesModels(t *testing.T) {
+	srv, err := New(&config.Config{
+		Server: config.ServerConfig{Host: "127.0.0.1", Port: 8080},
+		Routes: []config.Route{{Match: "claude/old", Provider: "chat", Model: "old"}, {Match: "*", Provider: "chat", Model: "fallback"}},
+		Providers: map[string]config.ProviderConfig{
+			"chat": {Kind: config.KindOpenAIChat, BaseURL: "https://example.test/v1"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Reload(&config.Config{
+		Server: config.ServerConfig{Host: "127.0.0.1", Port: 8080},
+		Routes: []config.Route{{Match: "claude/new", Provider: "chat", Model: "new"}, {Match: "*", Provider: "chat", Model: "fallback"}},
+		Providers: map[string]config.ProviderConfig{
+			"chat": {Kind: config.KindOpenAIChat, BaseURL: "https://example.test/v1"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rw := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	srv.handleModels(rw, req)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rw.Code, rw.Body.String())
+	}
+	if !strings.Contains(rw.Body.String(), "claude/new") || strings.Contains(rw.Body.String(), "claude/old") {
+		t.Fatalf("body = %s", rw.Body.String())
+	}
+}
+
+func TestReloadRejectsStartupOnlyChanges(t *testing.T) {
+	sessionA := t.TempDir() + "/sessions-a.json"
+	sessionB := t.TempDir() + "/sessions-b.json"
+	srv, err := New(&config.Config{
+		Server: config.ServerConfig{Host: "127.0.0.1", Port: 8080, ResponsesSessionStorePath: sessionA},
+		Routes: []config.Route{{Match: "claude/old", Provider: "chat", Model: "old"}, {Match: "*", Provider: "chat", Model: "fallback"}},
+		Providers: map[string]config.ProviderConfig{
+			"chat": {Kind: config.KindOpenAIChat, BaseURL: "https://example.test/v1"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Reload(&config.Config{
+		Server: config.ServerConfig{Host: "127.0.0.1", Port: 8081, ResponsesSessionStorePath: sessionA},
+		Routes: []config.Route{{Match: "claude/new", Provider: "chat", Model: "new"}, {Match: "*", Provider: "chat", Model: "fallback"}},
+		Providers: map[string]config.ProviderConfig{
+			"chat": {Kind: config.KindOpenAIChat, BaseURL: "https://example.test/v1"},
+		},
+	}); err == nil {
+		t.Fatal("expected host/port reload rejection")
+	}
+	if err := srv.Reload(&config.Config{
+		Server: config.ServerConfig{Host: "127.0.0.1", Port: 8080, ResponsesSessionStorePath: sessionB},
+		Routes: []config.Route{{Match: "claude/new", Provider: "chat", Model: "new"}, {Match: "*", Provider: "chat", Model: "fallback"}},
+		Providers: map[string]config.ProviderConfig{
+			"chat": {Kind: config.KindOpenAIChat, BaseURL: "https://example.test/v1"},
+		},
+	}); err == nil {
+		t.Fatal("expected session path reload rejection")
+	}
+	rw := httptest.NewRecorder()
+	srv.handleModels(rw, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rw.Code, rw.Body.String())
+	}
+	if !strings.Contains(rw.Body.String(), "claude/old") || strings.Contains(rw.Body.String(), "claude/new") {
+		t.Fatalf("body = %s", rw.Body.String())
+	}
+}
+
+func TestReloadUsesFreshAdapterCache(t *testing.T) {
+	callsA := 0
+	upstreamA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callsA++
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"choices":[{"delta":{"content":"old"},"finish_reason":"stop"}]}` + "\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstreamA.Close()
+
+	callsB := 0
+	upstreamB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callsB++
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"choices":[{"delta":{"content":"new"},"finish_reason":"stop"}]}` + "\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstreamB.Close()
+
+	srv, err := New(&config.Config{
+		Server: config.ServerConfig{Host: "127.0.0.1", Port: 8080},
+		Routes: []config.Route{{Match: "claude", Provider: "chat", Model: "gpt"}, {Match: "*", Provider: "chat", Model: "fallback"}},
+		Providers: map[string]config.ProviderConfig{
+			"chat": {Kind: config.KindOpenAIChat, BaseURL: upstreamA.URL, APIKey: "key"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rw := httptest.NewRecorder()
+	srv.handleMessages(rw, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude","messages":[{"role":"user","content":"hi"}]}`)))
+	if rw.Code != http.StatusOK || !strings.Contains(rw.Body.String(), "old") {
+		t.Fatalf("first response status=%d body=%s", rw.Code, rw.Body.String())
+	}
+	if callsA != 1 || callsB != 0 {
+		t.Fatalf("calls before reload: A=%d B=%d", callsA, callsB)
+	}
+
+	if err := srv.Reload(&config.Config{
+		Server: config.ServerConfig{Host: "127.0.0.1", Port: 8080},
+		Routes: []config.Route{{Match: "claude", Provider: "chat", Model: "gpt"}, {Match: "*", Provider: "chat", Model: "fallback"}},
+		Providers: map[string]config.ProviderConfig{
+			"chat": {Kind: config.KindOpenAIChat, BaseURL: upstreamB.URL, APIKey: "key"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rw = httptest.NewRecorder()
+	srv.handleMessages(rw, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude","messages":[{"role":"user","content":"hi"}]}`)))
+	if rw.Code != http.StatusOK || !strings.Contains(rw.Body.String(), "new") {
+		t.Fatalf("second response status=%d body=%s", rw.Code, rw.Body.String())
+	}
+	if callsA != 1 || callsB != 1 {
+		t.Fatalf("calls after reload: A=%d B=%d", callsA, callsB)
+	}
+}
+
 func TestHandleModelsMethodVariants(t *testing.T) {
 	srv := newTestServer(t, config.ServerConfig{}, config.KindOpenAIChat)
 	for _, method := range []string{http.MethodHead, http.MethodOptions} {
