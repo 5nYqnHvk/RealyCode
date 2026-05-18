@@ -116,7 +116,7 @@ ship the `relaycode` binary, `relaycode.example.yaml`, `README.md`, and
 Linux / macOS:
 
 ```bash
-VERSION=1.4.2
+VERSION=1.5.0
 curl -L -o relaycode.tar.gz \
   "https://github.com/5nYqnHvk/RelayCode/releases/download/${VERSION}/relaycode-${VERSION}-linux-amd64.tar.gz"
 tar -xzf relaycode.tar.gz
@@ -153,7 +153,7 @@ Point Claude Code at RelayCode:
 
 ```bash
 export ANTHROPIC_BASE_URL=http://127.0.0.1:8080
-export ANTHROPIC_AUTH_TOKEN=freecc   # match server.network.auth_token when configured
+export ANTHROPIC_API_KEY=freecc   # match server.network.auth_token when configured
 export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
 claude
 ```
@@ -161,6 +161,8 @@ claude
 If `server.network.auth_token` is empty, RelayCode does not require client auth.
 Set `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` or Claude Code's `/model`
 picker will not load RelayCode's custom model list.
+RelayCode also supports live config reload on `SIGHUP`; host/port and Responses
+session-store path changes still require a restart.
 
 Health check:
 
@@ -321,10 +323,13 @@ Config rules:
   No anchors, flow style, or multiline strings.
 - `routes[].match` is case-insensitive substring match against incoming Claude
   model name. First match wins.
-- Claude Code's model picker only keeps model ids that start with `claude` or
-  `anthropic`, so virtual route ids should use one of those prefixes.
-- Set `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` or Claude Code will skip
-  gateway model discovery and `/model` will show only built-in models.
+- Claude Code's model picker only keeps virtual model ids that start with
+  `claude` or `anthropic`, so route ids should use one of those prefixes.
+- Set `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` or Claude Code skips
+  gateway model discovery and `/model` shows only built-in models.
+- RelayCode reloads config live on `SIGHUP`, but `server.network.host`,
+  `server.network.port`, and `server.responses.session_store_path` still require
+  a restart.
 - Fallback route with `match: "*"` is required.
 - `providers.<name>.kind` must be `openai_chat`, `openai_responses`, or
   `anthropic_messages`.
